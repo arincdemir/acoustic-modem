@@ -3,11 +3,11 @@ config.py — All tuneable constants for the acoustic modem.
 """
 
 # ── Frequencies ──────────────────────────────────────────────────────────────
-FREQ_0 = 1175       # Hz  —  Logic 0
-FREQ_1 = 2350       # Hz  —  Logic 1
+FREQ_0 = 2000       # Hz  —  Logic 0
+FREQ_1 = 3000       # Hz  —  Logic 1
 
 # ── Baud / timing ────────────────────────────────────────────────────────────
-BAUD_RATE = 3                         # bits per second
+BAUD_RATE = 10                         # bits per second
 BIT_DURATION = 1.0 / BAUD_RATE        # seconds per bit
 
 # ── UART frame ───────────────────────────────────────────────────────────────
