@@ -1,0 +1,41 @@
+. The "Cartoon Police Siren" (The Tritone)
+
+In music theory, the tritone is known as the "Devil's Interval." It is highly dissonant and is historically used for European police sirens, the Simpsons intro theme, and scenes of cartoon panic. At 10 baud, your modem will sound like a tiny, panicked clown car.
+
+Because your original frequencies were 2000 Hz and 3000 Hz, these notes fit perfectly into the same audio range:
+
+    Logic 0 (C7): 2093 Hz
+
+    Logic 1 (F#7): 2794 Hz
+
+baud rate 2
+
+3. The "Broken Cuckoo Clock" / "Doorbell" (Major Third)
+
+A descending Major Third is the universal sound of a doorbell (Ding-Dong) or a cuckoo clock. Toggling back and forth between these at 10 times a second will sound like a malfunctioning doorbell.
+
+    Logic 0 (C6): 1046 Hz
+
+    Logic 1 (E6): 1318 Hz
+
+baud rate 3
+
+4. The "Jaws" Suspense (Minor Second)
+
+The Jaws theme famously alternates between two notes right next to each other (E and F). At 10 notes a second, it will sound like an incredibly anxious, fast-paced heartbeat.
+
+    Logic 0 (E6): 1318 Hz
+
+    Logic 1 (F6): 1397 Hz
+
+    ⚠️ Technical Warning for this one: A minor second places the frequencies only ~80 Hz apart. Your README mentions using the Goertzel algorithm for DSP. Depending on your mathematical window size in config.py, the receiver might have trouble distinguishing notes this close together without adjusting SNR_THRESHOLD.
+
+baud rate 4/5
+
+5. The "Goofy Octave" (Perfect Octave jump)
+
+Jumping an entire octave up and down rapidly sounds inherently goofy and bouncy (think of a slide whistle or a pogo stick). It provides excellent separation for your receiver's DSP logic.
+
+    Logic 0 (D6): 1175 Hz
+
+    Logic 1 (D7): 2350 Hz

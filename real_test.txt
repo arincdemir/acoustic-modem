@@ -1,0 +1,50 @@
+Step-by-step tuning for two real machines
+1. Physical setup
+Speaker volume on Tx machine: maximum
+Mic gain on Rx machine: system default (don't boost, that amplifies noise too)
+Start at ~50 cm apart, laptops facing each other
+2. Use --diagnose on the receiving machine
+bash
+python -m acoustic_modem --diagnose
+While the other machine transmits (--loopback "A" works as a signal source), you'll see live output:
+
+RMS  SNR@3kHz    dominant  state
+--------------------------------------------------
+44 tests still passing, loopback works. Here's a summary of what changed and how to tune:
+
+What was fixed
+INTER_CHAR_TIMEOUT was hardcoded at 0.15s — shorter than BIT_DURATION = 0.2s at 5 baud. This caused the receiver to time out in WAITING before the next character's start bit arrived, silently dropping every character after the first. It's now 1.5 × BIT_DURATION and auto-adjusts whenever you change BAUD_RATE.
+
+How to tune for two real machines
+Step 1 — Physical setup
+
+Speaker volume on the Tx laptop: maximum
+Mic gain on the Rx laptop: system default (boosting it also amplifies noise)
+Start ~50 cm apart, speakers facing the microphone
+Step 2 — Diagnose mode on the Rx machine
+
+Run this while the other laptop is silent, then again while it plays a tone (use --loopback "A" as a signal source):
+
+bash
+python -m acoustic_modem --diagnose
+It prints RMS, SNR@3kHz, dominant frequency, and what the receiver would decide for every 20 ms chunk.
+
+Step 3 — Read the numbers and adjust
+
+What you observe	What to change
+RMS stays low even with tone playing	Speaker too quiet or too far — move closer first. If still low, decrease NOISE_FLOOR (e.g. 1e-5)
+SILENT rows even with tone playing	Same as above
+noise/voice during silence	Background noise is triggering. Increase NOISE_FLOOR or SNR_THRESHOLD
+Receiver arms but never reads bits	PREAMBLE_LOCK_DURATION may be too long, or start-bit detection failing — try decreasing to 0.08
+First character received but not the rest	INTER_CHAR_TIMEOUT too short — now fixed, but if still happening raise it
+Garbled characters	Bit sampling off — try decreasing BAUD_RATE to 3 or 2 for more echo margin
+Step 4 — Recommended starting values for a typical quiet room at 50 cm
+
+python
+BAUD_RATE               = 5       # 2s per character — robust to echoes
+NOISE_FLOOR             = 1e-4    # raise to 5e-4 if false triggers, lower to 1e-5 if signal is weak
+SNR_THRESHOLD           = 0.30    # slightly more permissive than default (0.40) for real hardware
+PREAMBLE_LOCK_DURATION  = 0.10    # slightly shorter — real speakers don't have perfect rise time
+Step 5 — If it still doesn't work, add some debug prints temporarily
+
+Set SNR_THRESHOLD = 0.0 and NOISE_FLOOR = 0.0 to disable all squelch — if the receiver decodes something (even garbled), the signal path works and you only need to tighten thresholds. If nothing is decoded at all, the issue is timing/distance.

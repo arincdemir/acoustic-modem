@@ -57,10 +57,18 @@ The **squelch** in IDLE requires three conditions before arming:
 - Python ≥ 3.10
 - A speaker and microphone (built-in is fine)
 
-Install dependencies:
+Create and activate an isolated virtual environment, then install dependencies into it:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+```
+
+All subsequent commands (`python -m acoustic_modem`, `pytest`, etc.) should be run inside this activated environment. To deactivate when you're done:
+
+```bash
+deactivate
 ```
 
 ---
