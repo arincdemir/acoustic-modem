@@ -26,9 +26,9 @@ from acoustic_modem.tx import transmit_message
 
 _state_label: dict[RxState, str] = {
     RxState.IDLE:    "[IDLE]",
-    RxState.ARMED:   "[PREAMBLE DETECTED]",
-    RxState.READING: "[RECEIVING]",
-    RxState.WAITING: "[RECEIVING]",
+    RxState.ARMED:   "[ARMED]",
+    RxState.READING: "[READING]",
+    RxState.WAITING: "[WAITING]",
 }
 
 _current_state = RxState.IDLE
@@ -85,14 +85,14 @@ def run_diagnose(input_device: int | None) -> None:
 
     Output columns:
         RMS       — overall mic level  (compare to NOISE_FLOOR)
-        SNR@3kHz  — fraction of energy at FREQ_1 (compare to SNR_THRESHOLD)
-        dominant  — which FSK frequency dominates right now
+        SNR_1     — SNR for FREQ_1 (compare to SNR_THRESHOLD)
+        SNR_0     — SNR for FREQ_0 (compare to SNR_THRESHOLD)
         state     — what the receiver would decide
     """
     print("Diagnose mode — listening to microphone. Press Ctrl-C to stop.")
     print(f"Config: NOISE_FLOOR={config.NOISE_FLOOR:.0e}  "
           f"SNR_THRESHOLD={config.SNR_THRESHOLD:.2f}\n")
-    print(f"{'RMS':>10}  {'SNR@3kHz':>10}  {'dominant':>10}  state")
+    print(f"{'RMS':>10}  {'SNR_1':>10}  {'SNR_0':>10}  state")
     print("-" * 50)
 
     chunk_buf: list[np.ndarray] = []
@@ -114,27 +114,29 @@ def run_diagnose(input_device: int | None) -> None:
                     sd.sleep(int(config.CHUNK_DURATION * 1000))
                     continue
                 chunk = chunk_buf.pop(0)
-                rms  = float(np.sqrt(np.mean(chunk ** 2)))
-                snr  = dsp.compute_snr(chunk, config.FREQ_1, config.SAMPLE_RATE)
-                dom  = dsp.detect_bit(chunk, config.SAMPLE_RATE)
-                dom_str = f"{config.FREQ_1}Hz" if dom == 1 else f"{config.FREQ_0}Hz"
+                rms   = float(np.sqrt(np.mean(chunk ** 2)))
+                snr_1 = dsp.compute_snr(chunk, config.FREQ_1, config.SAMPLE_RATE)
+                snr_0 = dsp.compute_snr(chunk, config.FREQ_0, config.SAMPLE_RATE)
 
                 above_floor = rms >= config.NOISE_FLOOR
-                snr_ok      = snr >= config.SNR_THRESHOLD
+                snr_1_ok    = snr_1 >= config.SNR_THRESHOLD
+                snr_0_ok    = snr_0 >= config.SNR_THRESHOLD
 
                 if not above_floor:
                     state = "SILENT"
-                elif above_floor and snr_ok and dom == 1:
-                    state = "→ PREAMBLE?"
-                elif above_floor and dom == 0:
-                    state = "→ START BIT?"
+                elif snr_1_ok and (not snr_0_ok or snr_1 >= snr_0):
+                    state = "FREQ_1"
+                elif snr_0_ok:
+                    state = "FREQ_0"
                 else:
                     state = "noise/voice"
 
                 rms_flag = "✓" if above_floor else "✗"
-                snr_flag = "✓" if snr_ok else "✗"
-                print(f"{rms:>9.5f}{rms_flag}  {snr:>9.4f}{snr_flag}  "
-                      f"{dom_str:>10}  {state}")
+                snr_1_flag = "✓" if snr_1_ok else "✗"
+                snr_0_flag = "✓" if snr_0_ok else "✗"
+                
+                print(f"{rms:>9.5f}{rms_flag}  {snr_1:>9.4f}{snr_1_flag}  "
+                      f"{snr_0:>9.4f}{snr_0_flag}  {state}")
     except KeyboardInterrupt:
         print("\nDone.")
 
