@@ -7,7 +7,7 @@ FREQ_0 = 2000       # Hz  —  Logic 0
 FREQ_1 = 3000       # Hz  —  Logic 1
 
 # ── Baud / timing ────────────────────────────────────────────────────────────
-BAUD_RATE = 10                         # bits per second
+BAUD_RATE = 5                         # bits per second
 BIT_DURATION = 1.0 / BAUD_RATE        # seconds per bit
 
 # ── UART frame ───────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ DATA_BITS = 8
 # Time per character = 10 × BIT_DURATION
 
 # ── Preamble ─────────────────────────────────────────────────────────────────
-PREAMBLE_DURATION = 0.2     # s — 200 ms of FREQ_1 before first character
+PREAMBLE_DURATION = 0.4     # s — 300 ms of FREQ_1 before first character
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
 SAMPLE_RATE = 44100         # Hz
@@ -27,7 +27,7 @@ DTYPE = "float32"
 # Minimum RMS amplitude to avoid triggering on silence. Tune for your hardware:
 #   • Lower (e.g. 1e-5) if the transmitting laptop is quiet or far away.
 #   • Raise (e.g. 5e-4) if background noise keeps falsely triggering the receiver.
-NOISE_FLOOR = 1e-4
+NOISE_FLOOR = 3e-4
 
 # Fraction of total spectral energy that must be at FREQ_1 to count as preamble.
 # Human voices are broadband; our FSK tones are narrowband, so this can be high.
@@ -37,7 +37,7 @@ SNR_THRESHOLD = 0.40        # 40 % of total energy must be at FREQ_1
 
 # How long FREQ_1 must be continuously stable before the Rx "arms" itself.
 # Must be < PREAMBLE_DURATION (200 ms). Raise to reduce false triggers.
-PREAMBLE_LOCK_DURATION = 0.12   # s
+PREAMBLE_LOCK_DURATION = 0.2   # s
 
 # After the last stop bit, how long to wait for the next start bit before
 # returning to IDLE.  MUST be > BIT_DURATION or multi-character messages break.

@@ -213,13 +213,7 @@ class Receiver:
         identically to live mode.
         """
         above_floor = dsp.is_above_noise_floor(chunk)
-        snr_ok = (
-            dsp.compute_snr(chunk, config.FREQ_1, self._sample_rate)
-            >= config.SNR_THRESHOLD
-        )
-        dominant = dsp.detect_bit(chunk, self._sample_rate) == 1
-
-        preamble_detected = above_floor and snr_ok and dominant
+        preamble_detected = above_floor and (dsp.detect_bit(chunk, self._sample_rate) == 1)
 
         if preamble_detected:
             self._preamble_chunks += 1
@@ -266,6 +260,13 @@ class Receiver:
             return
 
         bit = dsp.detect_bit(chunk, self._sample_rate)
+
+        if bit == -1:
+            # Signal corrupted or lost, abort character
+            self._data_bits = []
+            self._waiting_chunks = 0
+            self._set_state(RxState.WAITING)
+            return
 
         if not self._reading_stop and self._bits_remaining > 0:
             # Reading a data bit

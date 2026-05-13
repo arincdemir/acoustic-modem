@@ -33,21 +33,31 @@ _state_label: dict[RxState, str] = {
 
 _current_state = RxState.IDLE
 _state_lock = threading.Lock()
+_last_was_char = False
 
 
 def _print_status(state: RxState) -> None:
-    global _current_state
+    global _current_state, _last_was_char
     with _state_lock:
         _current_state = state
     label = _state_label.get(state, str(state))
+    
+    if _last_was_char:
+        sys.stdout.write("\n")
+        _last_was_char = False
+        
     # Overwrite current line with state label
-    sys.stdout.write(f"\r{label}            \n")
+    sys.stdout.write(f"\r{label}            ")
     sys.stdout.flush()
 
 
 def _on_char(ch: str) -> None:
+    global _last_was_char
+    if not _last_was_char:
+        sys.stdout.write("\n")
     sys.stdout.write(ch)
     sys.stdout.flush()
+    _last_was_char = True
 
 
 # ── Loopback mode ─────────────────────────────────────────────────────────────

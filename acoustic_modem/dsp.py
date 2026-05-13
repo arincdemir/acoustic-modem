@@ -83,13 +83,19 @@ def total_energy(signal: np.ndarray) -> float:
 def detect_bit(chunk: np.ndarray,
                sample_rate: int = config.SAMPLE_RATE) -> int:
     """
-    Determine the logic value of `chunk` by comparing energy at FREQ_0 and
-    FREQ_1.  Returns 0 or 1.  Does NOT check the noise floor — callers that
-    need squelch should call is_above_noise_floor() first.
+    Determine the logic value of `chunk` by checking if the SNR for FREQ_0 or FREQ_1
+    is above the threshold. Returns 1 if FREQ_1 is dominant and valid, 0 if FREQ_0
+    is dominant and valid, or -1 if neither pass the SNR threshold.
     """
-    e0 = goertzel_energy(chunk, config.FREQ_0, sample_rate)
-    e1 = goertzel_energy(chunk, config.FREQ_1, sample_rate)
-    return 1 if e1 >= e0 else 0
+    snr_0 = compute_snr(chunk, config.FREQ_0, sample_rate)
+    snr_1 = compute_snr(chunk, config.FREQ_1, sample_rate)
+    
+    if snr_1 >= config.SNR_THRESHOLD and snr_1 >= snr_0:
+        return 1
+    elif snr_0 >= config.SNR_THRESHOLD:
+        return 0
+    else:
+        return -1
 
 
 def compute_snr(chunk: np.ndarray, target_freq: float,

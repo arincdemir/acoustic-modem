@@ -1,0 +1,6 @@
+if threshold is above, we checked if snr for freq1 is larger. if so, got bit1, else got bit1
+had to check both two are above the snr
+
+audio buffer truncation
+
+our character was getting lost because of the line carriages

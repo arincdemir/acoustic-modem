@@ -20,7 +20,13 @@ def build_waveform(text: str,
         ...
     """
     bits = framing.frame_message(text)
-    return dsp.bits_to_waveform(bits, sample_rate)
+    print(bits)
+    waveform = dsp.bits_to_waveform(bits, sample_rate)
+    
+    # Pad the end with 0.2s of silence so the audio driver 
+    # doesn't truncate the final stop bit when the stream closes.
+    silence = np.zeros(int(sample_rate * 0.2), dtype=config.DTYPE)
+    return np.concatenate((waveform, silence))
 
 
 def transmit_message(text: str,
