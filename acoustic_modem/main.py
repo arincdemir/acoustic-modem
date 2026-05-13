@@ -43,9 +43,14 @@ def _print_status(state: RxState) -> None:
     label = _state_label.get(state, str(state))
     
     if _last_was_char:
-        sys.stdout.write("\n")
-        _last_was_char = False
-        
+        if state == RxState.IDLE:
+            # End of message! Move to a new line and print IDLE.
+            sys.stdout.write("\n")
+            _last_was_char = False
+        else:
+            # Middle of a message, don't interrupt the characters with state labels.
+            return
+            
     # Overwrite current line with state label
     sys.stdout.write(f"\r{label}            ")
     sys.stdout.flush()
@@ -54,7 +59,8 @@ def _print_status(state: RxState) -> None:
 def _on_char(ch: str) -> None:
     global _last_was_char
     if not _last_was_char:
-        sys.stdout.write("\n")
+        # Erase the state label so characters start at the left margin
+        sys.stdout.write("\r                    \r")
     sys.stdout.write(ch)
     sys.stdout.flush()
     _last_was_char = True
