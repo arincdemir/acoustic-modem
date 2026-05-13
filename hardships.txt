@@ -1,6 +1,6 @@
-if threshold is above, we checked if snr for freq1 is larger. if so, got bit1, else got bit1
-had to check both two are above the snr
+if threshold is above noise floor, we checked if snr for freq1 is larger. if so, got bit1, else got bit0
+had to check both two are above the snr. otherwise, high voices that is not freq1 got registered as bit0
 
-audio buffer truncation
+audio buffer truncation. need to output silence after the data, for python to not close the sound outputter.
 
 our character was getting lost because of the line carriages

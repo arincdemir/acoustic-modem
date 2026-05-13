@@ -20,7 +20,6 @@ def build_waveform(text: str,
         ...
     """
     bits = framing.frame_message(text)
-    print(bits)
     waveform = dsp.bits_to_waveform(bits, sample_rate)
     
     # Pad the end with 0.2s of silence so the audio driver 
