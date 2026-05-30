@@ -2,21 +2,26 @@
 config.py — All tuneable constants for the acoustic modem.
 """
 
-# ── Frequencies ──────────────────────────────────────────────────────────────
-FREQ_0 = 2000       # Hz  —  Logic 0
-FREQ_1 = 3000       # Hz  —  Logic 1
+# ── Frequencies (4-FSK) ───────────────────────────────────────────────────────
+FREQ_00 = 1000       # Hz  —  dibit 00
+FREQ_01 = 2000       # Hz  —  dibit 01
+FREQ_10 = 3000       # Hz  —  dibit 10
+FREQ_11 = 4000       # Hz  —  dibit 11
+
+FREQUENCIES = [FREQ_00, FREQ_01, FREQ_10, FREQ_11]  # indexed by dibit value (0–3)
+PREAMBLE_FREQ = FREQ_11                               # preamble tone ("all-ones" dibit)
 
 # ── Baud / timing ────────────────────────────────────────────────────────────
-BAUD_RATE = 5                         # bits per second
-BIT_DURATION = 1.0 / BAUD_RATE        # seconds per bit
+BAUD_RATE = 5                           # symbols per second  (each symbol = 2 bits → 10 bps)
+SYMBOL_DURATION = 1.0 / BAUD_RATE      # seconds per symbol
 
 # ── UART frame ───────────────────────────────────────────────────────────────
 DATA_BITS = 8
-# Total bits per character frame: 1 start + 8 data + 1 stop = 10
-# Time per character = 10 × BIT_DURATION
+# Total bits per character frame: 1 start + 8 data + 1 stop = 10 bits = 5 symbols
+# Time per character = 5 × SYMBOL_DURATION
 
 # ── Preamble ─────────────────────────────────────────────────────────────────
-PREAMBLE_DURATION = 0.4     # s — 300 ms of FREQ_1 before first character
+PREAMBLE_DURATION = 0.4     # s — 400 ms of PREAMBLE_FREQ before first character
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
 SAMPLE_RATE = 44100         # Hz
@@ -24,28 +29,24 @@ CHANNELS = 1
 DTYPE = "float32"
 
 # ── Receiver squelch / detection ─────────────────────────────────────────────
-# Minimum RMS amplitude to avoid triggering on silence. Tune for your hardware:
-#   • Lower (e.g. 1e-5) if the transmitting laptop is quiet or far away.
-#   • Raise (e.g. 5e-4) if background noise keeps falsely triggering the receiver.
 NOISE_FLOOR = 3e-4
 
-# Fraction of total spectral energy that must be at FREQ_1 to count as preamble.
-# Human voices are broadband; our FSK tones are narrowband, so this can be high.
-#   • Lower (e.g. 0.25) in noisy rooms where background raises the noise floor.
+# Fraction of total spectral energy that must be at the dominant frequency.
+# Human voices are broadband; FSK tones are narrowband, so this can be high.
+#   • Lower (e.g. 0.25) in noisy rooms.
 #   • Keep at 0.40+ in quiet rooms for best false-positive rejection.
-SNR_THRESHOLD = 0.40        # 40 % of total energy must be at FREQ_1
+SNR_THRESHOLD = 0.40
 
-# How long FREQ_1 must be continuously stable before the Rx "arms" itself.
-# Must be < PREAMBLE_DURATION (200 ms). Raise to reduce false triggers.
+# How long PREAMBLE_FREQ must be continuously stable before the Rx "arms" itself.
+# Must be < PREAMBLE_DURATION.
 PREAMBLE_LOCK_DURATION = 0.2   # s
 
-# After the last stop bit, how long to wait for the next start bit before
-# returning to IDLE.  MUST be > BIT_DURATION or multi-character messages break.
-# Derived automatically so it stays correct when BAUD_RATE is changed.
-INTER_CHAR_TIMEOUT = 1.5 * BIT_DURATION   # s  (1.5 bit-durations of headroom)
+# After the last stop symbol, how long to wait for the next start symbol before
+# returning to IDLE.  MUST be > SYMBOL_DURATION or multi-character messages break.
+INTER_CHAR_TIMEOUT = 1.5 * SYMBOL_DURATION   # s  (1.5 symbol-durations of headroom)
 
 # ── Analysis chunk ───────────────────────────────────────────────────────────
-# We analyse audio in chunks of this size. Must be << BIT_DURATION.
+# We analyse audio in chunks of this size. Must be << SYMBOL_DURATION.
 # Smaller = more responsive; larger = better frequency resolution.
 CHUNK_DURATION = 0.02       # s  (20 ms)
 CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION)   # samples per chunk

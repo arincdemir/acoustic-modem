@@ -2,10 +2,19 @@
 rx.py — Receiver: audio stream → 4-state machine → decoded characters.
 
 State machine:
-    IDLE     → waiting for preamble (3 squelch conditions must all pass)
-    ARMED    → preamble detected, waiting for start bit (2000 Hz / logic 0)
-    READING  → clocked: sampling 8 data bits then stop bit
+    IDLE     → waiting for preamble (PREAMBLE_FREQ / symbol 3 must be stable)
+    ARMED    → preamble detected, waiting for start symbol (dibit MSB = 0)
+    READING  → clocked: sampling 3 data symbols then 1 stop symbol
     WAITING  → between characters in the same message; no new preamble needed
+
+4-FSK symbol encoding:
+    Dibit 00 (sym 0) → FREQ_00   Dibit 10 (sym 2) → FREQ_10
+    Dibit 01 (sym 1) → FREQ_01   Dibit 11 (sym 3) → FREQ_11 (preamble)
+
+Each UART frame (10 bits) is packed into 5 symbols of 2 bits each:
+    Symbol 0: [start=0, d0]   Symbol 3: [d5, d6]
+    Symbol 1: [d1,  d2]       Symbol 4: [d7, stop=1]
+    Symbol 2: [d3,  d4]
 
 The receiver can operate in two modes:
   • Live mode:    reads from the microphone via sounddevice.InputStream.
@@ -175,9 +184,9 @@ class Receiver:
                 # Pad the final short chunk with silence
                 chunk = np.pad(chunk, (0, chunk_size - len(chunk)))
             self._process_chunk(chunk)
-        # Feed a silence chunk to flush the WAITING→IDLE timeout
+        # Feed silence to flush the WAITING→IDLE timeout.
         silence = np.zeros(chunk_size, dtype=config.DTYPE)
-        for _ in range(int(config.INTER_CHAR_TIMEOUT / config.CHUNK_DURATION) + 2):
+        for _ in range(_INTER_CHAR_TIMEOUT_CHUNKS + 2):
             self._process_chunk(silence)
 
     # ── State machine ─────────────────────────────────────────────────────────
@@ -203,9 +212,9 @@ class Receiver:
 
     def _handle_idle(self, chunk: np.ndarray) -> None:
         """
-        Check three squelch conditions for the preamble (3000 Hz):
+        Check three squelch conditions for the preamble (PREAMBLE_FREQ / symbol 3):
           1. Above noise floor (RMS threshold)
-          2. SNR — FREQ_1 dominates the spectrum
+          2. SNR — PREAMBLE_FREQ dominates the spectrum (detect_symbol returns 3)
           3. Chunk-count lock — tone must be stable for PREAMBLE_LOCK_CHUNKS consecutive chunks
 
         Timing is tracked in chunk counts (not wall-clock time) so that
@@ -213,7 +222,7 @@ class Receiver:
         identically to live mode.
         """
         above_floor = dsp.is_above_noise_floor(chunk)
-        preamble_detected = above_floor and (dsp.detect_bit(chunk, self._sample_rate) == 1)
+        preamble_detected = above_floor and (dsp.detect_symbol(chunk, self._sample_rate) == 3)
 
         if preamble_detected:
             self._preamble_chunks += 1
@@ -224,87 +233,107 @@ class Receiver:
         else:
             self._preamble_chunks = 0   # reset lock counter
 
-    # ── ARMED: wait for start bit (0 = 2000 Hz) ──────────────────────────────
+    # ── ARMED: wait for start symbol (dibit MSB = 0) ─────────────────────────
 
     def _handle_armed(self, chunk: np.ndarray) -> None:
-        """Wait for the transition from preamble (FREQ_1) to start bit (FREQ_0)."""
+        """
+        Wait for the transition from preamble (symbol 3) to a start symbol.
+
+        The start symbol has MSB = 0 (i.e. dibit value 0 or 1).  Its MSB is
+        the start bit; its LSB is the first data bit d0.
+        """
         if not dsp.is_above_noise_floor(chunk):
             # Lost the signal entirely — back to IDLE
             self._set_state(RxState.IDLE)
             return
 
-        bit = dsp.detect_bit(chunk, self._sample_rate)
-        if bit == 0:
-            # Start bit detected — begin reading data bits
-            self._data_bits = []
+        sym = dsp.detect_symbol(chunk, self._sample_rate)
+        if sym in (0, 1):
+            # Start symbol detected: MSB=0 (start bit), LSB=d0
+            d0 = sym & 1
+            self._data_bits = [d0]
             self._set_state(RxState.READING)
-            # Consume the start bit: schedule first data sample at 1.5 × BIT_DURATION
-            # We achieve this by skipping 1.5 bit-durations worth of chunks.
+            # Skip to centre of the next symbol (1.5 × SYMBOL_DURATION from now).
             self._samples_to_skip = int(
-                1.5 * config.BIT_DURATION / config.CHUNK_DURATION
+                1.5 * config.SYMBOL_DURATION / config.CHUNK_DURATION
             )
-            self._bits_remaining = config.DATA_BITS
-            self._reading_stop = False  # next after data is the stop bit
+            # 3 more data symbols remain: [d1,d2], [d3,d4], [d5,d6]
+            self._bits_remaining = 3
+            self._reading_stop = False  # next after data symbols is the stop symbol
 
-    # ── READING: clock in data bits then stop bit ─────────────────────────────
+    # ── READING: clock in data symbols then stop symbol ──────────────────────
 
     def _handle_reading(self, chunk: np.ndarray) -> None:
         """
-        After the start-bit edge we sample at:
-          • 1.5 × BIT_DURATION  for the first data bit
-          • every 1.0 × BIT_DURATION  for subsequent bits
-        We count chunks to track timing.
+        After the start symbol we sample at:
+          • 1.5 × SYMBOL_DURATION  for the first data symbol
+          • every 1.0 × SYMBOL_DURATION  for subsequent symbols
+
+        _bits_remaining counts remaining DATA symbols (each carries 2 bits).
+        After those 3 symbols are read the next sample is the stop symbol,
+        which carries [d7, stop=1].
         """
         if self._samples_to_skip > 0:
             self._samples_to_skip -= 1
             return
 
-        bit = dsp.detect_bit(chunk, self._sample_rate)
+        sym = dsp.detect_symbol(chunk, self._sample_rate)
 
-        if bit == -1:
-            # Signal corrupted or lost, abort character
+        if sym == -1:
+            # Signal corrupted or lost — abort character
             self._data_bits = []
             self._waiting_chunks = 0
             self._set_state(RxState.WAITING)
             return
 
         if not self._reading_stop and self._bits_remaining > 0:
-            # Reading a data bit
-            self._data_bits.append(bit)
+            # Data symbol: extract 2 bits (MSB first)
+            self._data_bits.append((sym >> 1) & 1)
+            self._data_bits.append(sym & 1)
             self._bits_remaining -= 1
             if self._bits_remaining == 0:
-                # Done with data — next sample is the stop bit
+                # Done with data symbols — next sample is the stop symbol
                 self._reading_stop = True
                 self._samples_to_skip = int(
-                    1.0 * config.BIT_DURATION / config.CHUNK_DURATION
+                    1.0 * config.SYMBOL_DURATION / config.CHUNK_DURATION
                 ) - 1
         elif self._reading_stop:
-            # This is the stop bit sample
-            if bit == 1:
+            # Stop symbol encoding: [stop, d7] — stop is MSB, d7 is LSB.
+            # This guarantees stop symbols are always in {2, 3}, so WAITING
+            # can never confuse them with start symbols {0, 1}.
+            stop_bit = (sym >> 1) & 1   # MSB = stop bit
+            d7 = sym & 1                # LSB = d7
+            self._data_bits.append(d7)
+            if stop_bit == 1:
                 # Valid stop bit — decode and emit character
                 try:
                     char = self._decode_char(self._data_bits)
                     self._on_char(char)
                 except ValueError:
                     pass  # corrupted frame — silently discard
-            # Either way, transition to WAITING for the next start bit
+            # Transition to WAITING.  No guard needed: stop symbols ∈ {2,3}
+            # can never trigger start-symbol detection (which checks {0,1}).
             self._data_bits = []
             self._waiting_chunks = 0
             self._set_state(RxState.WAITING)
 
-        # Schedule next sample 1 bit duration away
+        # Schedule next sample 1 symbol duration away
         if self._state == RxState.READING:
             self._samples_to_skip = int(
-                1.0 * config.BIT_DURATION / config.CHUNK_DURATION
+                1.0 * config.SYMBOL_DURATION / config.CHUNK_DURATION
             ) - 1
 
-    # ── WAITING: listen for next start bit without a new preamble ────────────
+    # ── WAITING: listen for next start symbol without a new preamble ─────────
 
     def _handle_waiting(self, chunk: np.ndarray) -> None:
         """
-        Between characters in the same message: listen for 2000 Hz (start bit).
-        If no start bit is seen within INTER_CHAR_TIMEOUT_CHUNKS chunks, go to IDLE.
-        Timing uses chunk counts for consistency with loopback mode.
+        Between characters in the same message: listen for a start symbol
+        (dibit MSB = 0, i.e. symbol 0 or 1).
+        If no start symbol is seen within INTER_CHAR_TIMEOUT_CHUNKS chunks,
+        go to IDLE.  Timing uses chunk counts for consistency with loopback mode.
+
+        No guard is required because stop symbols are always in {2, 3} (their
+        MSB is 1), so they cannot trigger the start-symbol check {0, 1}.
         """
         self._waiting_chunks += 1
         if self._waiting_chunks > _INTER_CHAR_TIMEOUT_CHUNKS:
@@ -312,15 +341,16 @@ class Receiver:
             return
 
         if dsp.is_above_noise_floor(chunk):
-            bit = dsp.detect_bit(chunk, self._sample_rate)
-            if bit == 0:
-                # Next start bit found — go straight to READING
-                self._data_bits = []
+            sym = dsp.detect_symbol(chunk, self._sample_rate)
+            if sym in (0, 1):
+                # Start symbol found: MSB=0 (start bit), LSB=d0
+                d0 = sym & 1
+                self._data_bits = [d0]
                 self._set_state(RxState.READING)
                 self._samples_to_skip = int(
-                    1.5 * config.BIT_DURATION / config.CHUNK_DURATION
+                    1.5 * config.SYMBOL_DURATION / config.CHUNK_DURATION
                 )
-                self._bits_remaining = config.DATA_BITS
+                self._bits_remaining = 3
                 self._reading_stop = False
 
     # ── Decoding helper ───────────────────────────────────────────────────────
