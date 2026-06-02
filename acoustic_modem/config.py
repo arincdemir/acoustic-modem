@@ -2,23 +2,48 @@
 config.py — All tuneable constants for the acoustic modem.
 """
 
-# ── Frequencies (4-FSK) ───────────────────────────────────────────────────────
-FREQ_00 = 1000       # Hz  —  dibit 00
-FREQ_01 = 2000       # Hz  —  dibit 01
-FREQ_10 = 3000       # Hz  —  dibit 10
-FREQ_11 = 4000       # Hz  —  dibit 11
+# ── Frequencies (6-tone FSK on the A blues scale) ─────────────────────────────
+# Every tone is a note of the A blues scale, whose six pitch classes (semitones
+# above A) are {0, 3, 5, 6, 7, 10} = A, C, D, D#, E, G.  The notes are spread
+# across several octaves so that neighbouring tones are ~7 semitones (a ~1.5×
+# frequency ratio) apart — i.e. as far from one another as possible — which
+# keeps detection robust and unambiguous.
+#
+# Roles:
+#   • 4 "data" tones carry one dibit each (4-FSK) → the 8 data bits.
+#   • 1 dedicated tone marks the START bit (single bit, its own frequency).
+#   • 1 dedicated tone marks the STOP bit  (single bit, its own frequency).
+#
+# Data tones (4-FSK), indexed by dibit value (0–3):
+FREQ_00 = 880        # Hz — A5 — dibit 00
+FREQ_01 = 1319       # Hz — E6 — dibit 01
+FREQ_10 = 2093       # Hz — C7 — dibit 10
+FREQ_11 = 3136       # Hz — G7 — dibit 11
 
-FREQUENCIES = [FREQ_00, FREQ_01, FREQ_10, FREQ_11]  # indexed by dibit value (0–3)
-PREAMBLE_FREQ = FREQ_11                               # preamble tone ("all-ones" dibit)
+# Single-bit framing tones:
+FREQ_START = 587     # Hz — D5 — start-of-frame marker
+FREQ_STOP  = 4699    # Hz — D8 — stop-of-frame marker (also the idle/preamble tone)
+
+DATA_FREQUENCIES = [FREQ_00, FREQ_01, FREQ_10, FREQ_11]   # indexed by dibit value (0–3)
+
+# All six tones in a fixed index order shared by the detector and the receiver:
+#   indices 0..3 → data dibits, index 4 → START, index 5 → STOP.
+FREQUENCIES = DATA_FREQUENCIES + [FREQ_START, FREQ_STOP]
+START_INDEX = 4
+STOP_INDEX  = 5
+
+# The UART idle line rests at the mark (stop) level, so we reuse the STOP tone
+# as the preamble / idle tone.
+PREAMBLE_FREQ = FREQ_STOP
 
 # ── Baud / timing ────────────────────────────────────────────────────────────
-BAUD_RATE = 5                           # symbols per second  (each symbol = 2 bits → 10 bps)
+BAUD_RATE = 5                           # symbols (tones) per second
 SYMBOL_DURATION = 1.0 / BAUD_RATE      # seconds per symbol
 
 # ── UART frame ───────────────────────────────────────────────────────────────
 DATA_BITS = 8
-# Total bits per character frame: 1 start + 8 data + 1 stop = 10 bits = 5 symbols
-# Time per character = 5 × SYMBOL_DURATION
+# Tones per character frame: 1 START + 4 data dibits + 1 STOP = 6 symbols.
+# Time per character = 6 × SYMBOL_DURATION
 
 # ── Preamble ─────────────────────────────────────────────────────────────────
 PREAMBLE_DURATION = 0.4     # s — 400 ms of PREAMBLE_FREQ before first character

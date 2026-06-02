@@ -101,12 +101,12 @@ def run_diagnose(input_device: int | None) -> None:
 
     Output columns:
         RMS          — overall mic level  (compare to NOISE_FLOOR)
-        SNR_00..11   — SNR for each of the four 4-FSK frequencies
-        detected     — which symbol (or state) the receiver would decide
+        SNR_*        — SNR for each of the six FSK frequencies
+        detected     — which tone (or state) the receiver would decide
     """
-    _sym_labels = ["SNR_00", "SNR_01", "SNR_10", "SNR_11"]
+    _sym_labels = ["SNR_00", "SNR_01", "SNR_10", "SNR_11", "SNR_START", "SNR_STOP"]
     _freq_labels = [
-        f"FREQ_{lbl[4:]} ({freq} Hz)"
+        f"{lbl[4:]} ({freq} Hz)"
         for lbl, freq in zip(_sym_labels, config.FREQUENCIES)
     ]
 
@@ -146,10 +146,10 @@ def run_diagnose(input_device: int | None) -> None:
 
                 if not above_floor:
                     state = "SILENT"
-                elif sym == 3:
-                    state = "PREAMBLE (sym 3 / 11)"
-                elif sym in (0, 1):
-                    state = f"start/data (sym {sym} / {sym:02b})"
+                elif sym == config.STOP_INDEX:
+                    state = "STOP / preamble"
+                elif sym == config.START_INDEX:
+                    state = "START"
                 elif sym != -1:
                     state = f"data (sym {sym} / {sym:02b})"
                 else:

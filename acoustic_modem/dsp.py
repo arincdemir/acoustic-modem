@@ -1,13 +1,22 @@
 """
 dsp.py — DSP utilities: tone generation, Goertzel energy, symbol detection.
 
-Four-frequency FSK (4-FSK):
-  Dibit 00  →  FREQ_00  (1000 Hz)
-  Dibit 01  →  FREQ_01  (2000 Hz)
-  Dibit 10  →  FREQ_10  (3000 Hz)
-  Dibit 11  →  FREQ_11  (4000 Hz)
+Six-tone FSK on the A blues scale (see config.py).  The tones split into two
+roles:
 
-Each symbol carries 2 bits.  A 10-bit UART frame is transmitted as 5 symbols.
+  Data tones (4-FSK, two bits each):
+    Dibit 00  →  FREQ_00  (880 Hz)
+    Dibit 01  →  FREQ_01  (1319 Hz)
+    Dibit 10  →  FREQ_10  (2093 Hz)
+    Dibit 11  →  FREQ_11  (3136 Hz)
+
+  Single-bit framing tones:
+    START     →  FREQ_START (587 Hz)   — index 4
+    STOP      →  FREQ_STOP  (4699 Hz)  — index 5 (also the preamble/idle tone)
+
+A character frame is transmitted as 6 symbols: START + 4 data dibits + STOP.
+`detect_symbol` returns the index (0–5) of the dominant tone, or -1 if none
+clears the SNR threshold.
 """
 
 import numpy as np
@@ -27,22 +36,23 @@ def generate_tone(freq: float, duration: float,
 def bits_to_waveform(bits: list[int],
                      sample_rate: int = config.SAMPLE_RATE) -> np.ndarray:
     """
-    Convert a flat bit list into a complete 4-FSK audio waveform.
+    Convert a flat bit list into a complete six-tone FSK audio waveform.
 
     Prepends the preamble (PREAMBLE_DURATION of PREAMBLE_FREQ), then encodes
-    each pair of bits as a tone of SYMBOL_DURATION seconds.
-
-    Dibit encoding (MSB-first):  sym = (bits[i] << 1) | bits[i+1]
+    the bits as a sequence of tones, each SYMBOL_DURATION seconds long.
 
     UART-frame-aware encoding (when len(bits) is a multiple of 10):
-        For each 10-bit UART frame the last dibit is sent as [stop, d7]
-        instead of the sequential [d7, stop].  This guarantees:
-          • Start symbols always fall in {0, 1}  (start bit is MSB = 0)
-          • Stop  symbols always fall in {2, 3}  (stop  bit is MSB = 1)
-        so the WAITING receiver can never confuse the two.
+        Each 10-bit frame [start, d0..d7, stop] becomes 6 tones:
+          • One START tone   (FREQ_START) — the single start bit.
+          • Four data tones  — the 8 data bits, two bits per tone (MSB-first):
+                sym = (data[2j] << 1) | data[2j+1]
+          • One STOP tone    (FREQ_STOP)  — the single stop bit.
+        Because START and STOP have their own dedicated frequencies, the
+        receiver can never confuse a framing bit with a data symbol.
 
-    For inputs that are NOT multiples of 10 bits, simple sequential dibit
-    pairing is used (odd-length inputs are zero-padded to even length).
+    For inputs that are NOT multiples of 10 bits (edge cases / unit tests),
+    the bits are simply paired into data dibits with no framing tones
+    (odd-length inputs are zero-padded to even length).
     """
     segments: list[np.ndarray] = []
 
@@ -50,23 +60,24 @@ def bits_to_waveform(bits: list[int],
                                   sample_rate))
 
     if len(bits) > 0 and len(bits) % 10 == 0:
-        # Full UART frames — use stop-bit-first last dibit per frame.
+        # Full UART frames — START tone, 4 data tones, STOP tone.
         for frame_start in range(0, len(bits), 10):
             frame = bits[frame_start:frame_start + 10]
+            segments.append(generate_tone(config.FREQ_START,
+                                          config.SYMBOL_DURATION, sample_rate))
+            data = frame[1:9]  # 8 data bits, LSB-first
             for j in range(4):
-                sym = (frame[2 * j] << 1) | frame[2 * j + 1]
-                segments.append(generate_tone(config.FREQUENCIES[sym],
+                sym = (data[2 * j] << 1) | data[2 * j + 1]
+                segments.append(generate_tone(config.DATA_FREQUENCIES[sym],
                                               config.SYMBOL_DURATION, sample_rate))
-            # Last dibit: [stop=frame[9], d7=frame[8]] → sym ∈ {2, 3}
-            sym = (frame[9] << 1) | frame[8]
-            segments.append(generate_tone(config.FREQUENCIES[sym],
+            segments.append(generate_tone(config.FREQ_STOP,
                                           config.SYMBOL_DURATION, sample_rate))
     else:
         # Non-frame input (edge cases / tests) — simple sequential dibit pairing.
         padded = bits if len(bits) % 2 == 0 else bits + [0]
         for i in range(0, len(padded), 2):
             sym = (padded[i] << 1) | padded[i + 1]
-            segments.append(generate_tone(config.FREQUENCIES[sym],
+            segments.append(generate_tone(config.DATA_FREQUENCIES[sym],
                                           config.SYMBOL_DURATION, sample_rate))
 
     return np.concatenate(segments)
@@ -112,11 +123,14 @@ def total_energy(signal: np.ndarray) -> float:
 def detect_symbol(chunk: np.ndarray,
                   sample_rate: int = config.SAMPLE_RATE) -> int:
     """
-    Identify which of the four 4-FSK tones is present in `chunk`.
+    Identify which of the six FSK tones is present in `chunk`.
 
     Computes the SNR for each frequency in config.FREQUENCIES, selects the one
-    with the highest SNR, and returns its dibit value (0–3) if that SNR clears
+    with the highest SNR, and returns its index if that SNR clears
     SNR_THRESHOLD.  Returns -1 if no frequency passes the threshold.
+
+    Index meaning (see config.FREQUENCIES):
+        0–3 → data dibit value, 4 → START tone, 5 → STOP tone.
     """
     snrs = [compute_snr(chunk, freq, sample_rate) for freq in config.FREQUENCIES]
     best = int(np.argmax(snrs))

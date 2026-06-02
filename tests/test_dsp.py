@@ -1,5 +1,5 @@
 """
-tests/test_dsp.py — Unit tests for the DSP module (4-FSK).
+tests/test_dsp.py — Unit tests for the DSP module (six-tone FSK).
 """
 
 import numpy as np
@@ -26,7 +26,7 @@ class TestGenerateTone:
 
 class TestGoertzelEnergy:
     def test_target_freq_dominates(self):
-        """Energy at the generated frequency should dominate all other 4-FSK frequencies."""
+        """Energy at the generated frequency should dominate all other FSK frequencies."""
         for i, freq in enumerate(config.FREQUENCIES):
             tone = dsp.generate_tone(freq, config.SYMBOL_DURATION, SR)
             e_target = dsp.goertzel_energy(tone, freq, SR)
@@ -53,7 +53,7 @@ class TestGoertzelEnergy:
 
 class TestDetectSymbol:
     def test_each_symbol_clean(self):
-        """Each of the 4 pure tones should map to its correct dibit value."""
+        """Each of the 6 pure tones should map to its correct index."""
         for sym_val, freq in enumerate(config.FREQUENCIES):
             tone = dsp.generate_tone(freq, config.SYMBOL_DURATION, SR)
             assert dsp.detect_symbol(tone, SR) == sym_val, (
@@ -87,19 +87,21 @@ class TestBitsToWaveform:
         expected_len = int(SR * (config.PREAMBLE_DURATION + config.SYMBOL_DURATION))
         assert len(wav) == expected_len
 
-    def test_10_bits_five_symbols(self):
-        """10 bits = 5 dibits → preamble + 5 symbol segments."""
+    def test_10_bits_six_symbols(self):
+        """One UART frame = START + 4 data + STOP → preamble + 6 symbol segments."""
         bits = [0, 1, 0, 0, 0, 1, 0, 0, 0, 1]  # one UART frame
         wav = dsp.bits_to_waveform(bits, SR)
         # Match how bits_to_waveform accumulates lengths to avoid FP rounding.
-        expected = int(SR * config.PREAMBLE_DURATION) + 5 * int(SR * config.SYMBOL_DURATION)
+        expected = int(SR * config.PREAMBLE_DURATION) + 6 * int(SR * config.SYMBOL_DURATION)
         assert len(wav) == expected
 
     def test_preamble_tone_is_preamble_freq(self):
-        """A chunk-sized window of PREAMBLE_FREQ should be detected as symbol 3."""
+        """A chunk-sized window of PREAMBLE_FREQ should be detected as the STOP tone."""
         chunk = dsp.generate_tone(config.PREAMBLE_FREQ, config.CHUNK_DURATION, SR)
         sym = dsp.detect_symbol(chunk, SR)
-        assert sym == 3, f"Preamble chunk should be symbol 3 (FREQ_11), got {sym}"
+        assert sym == config.STOP_INDEX, (
+            f"Preamble chunk should be the STOP tone (index {config.STOP_INDEX}), got {sym}"
+        )
 
 
 class TestIsAboveNoiseFloor:
