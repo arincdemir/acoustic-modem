@@ -1,6 +1,27 @@
-if threshold is above noise floor, we checked if snr for freq1 is larger. if so, got bit1, else got bit0
-had to check both two are above the snr. otherwise, high voices that is not freq1 got registered as bit0
+Hardships & Lessons Learned
+============================
 
-audio buffer truncation. need to output silence after the data, for python to not close the sound outputter.
+1. Bit Detection via SNR Comparison
+   Problem:  To decide whether a received symbol is bit-1 or bit-0, we check
+             whether the signal is above the noise floor and then compare the
+             SNR at freq1 vs. freq0 — whichever is higher wins.
+   Gotcha:   We must verify that *both* frequencies are above the SNR
+             threshold. Otherwise, any loud ambient sound (e.g. a high-pitched
+             voice) that doesn't match freq1 would still be decoded as bit-0,
+             since freq0's SNR would appear relatively higher by default.
 
-our character was getting lost because of the line carriages
+2. Audio Buffer Truncation
+   Problem:  Python's audio backend closes the output stream as soon as the
+             last sample is written, which can cut off the final symbol.
+   Solution: Append a short block of silence after the actual data so the
+             stream stays open long enough for the last symbol to be fully
+             played out.
+
+3. Click / Pop Artifact Between Symbols ("Pfft" Sound)
+   Problem:  Each new symbol started its sine wave at phase 0, regardless of
+             where the previous symbol's waveform ended. This discontinuity
+             caused an audible click (a "pfft" sound) at every symbol boundary.
+   Solution: (a) Begin each new symbol at the ending phase of the previous one,
+                 making the composite waveform continuous.
+             (b) Apply a short amplitude fade-out at the end of each symbol to
+                 further smooth the transition.
