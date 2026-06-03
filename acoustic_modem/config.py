@@ -15,14 +15,14 @@ config.py — All tuneable constants for the acoustic modem.
 #   • 1 dedicated tone marks the STOP bit  (single bit, its own frequency).
 #
 # Data tones (4-FSK), indexed by dibit value (0–3):
-FREQ_00 = 880        # Hz — A5 — dibit 00
-FREQ_01 = 1319       # Hz — E6 — dibit 01
-FREQ_10 = 2093       # Hz — C7 — dibit 10
-FREQ_11 = 3136       # Hz — G7 — dibit 11
+FREQ_00 = 880    # A5  — data 00
+FREQ_01 = 1047   # C6  — data 01
+FREQ_10 = 1175   # D6  — data 10
+FREQ_11 = 1568   # G6  — data 11
 
-# Single-bit framing tones:
-FREQ_START = 587     # Hz — D5 — start-of-frame marker
-FREQ_STOP  = 4699    # Hz — D8 — stop-of-frame marker (also the idle/preamble tone)
+FREQ_START = 1245  # Eb6 / D#6 — start
+FREQ_STOP  = 1319  # E6        — stop / preamble
+
 
 DATA_FREQUENCIES = [FREQ_00, FREQ_01, FREQ_10, FREQ_11]   # indexed by dibit value (0–3)
 
@@ -77,5 +77,5 @@ INTER_CHAR_TIMEOUT = 1.5 * SYMBOL_DURATION   # s  (1.5 symbol-durations of headr
 # ── Analysis chunk ───────────────────────────────────────────────────────────
 # We analyse audio in chunks of this size. Must be << SYMBOL_DURATION.
 # Smaller = more responsive; larger = better frequency resolution.
-CHUNK_DURATION = 0.02       # s  (20 ms)
+CHUNK_DURATION = 0.05       # s  (20 ms)
 CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION)   # samples per chunk
