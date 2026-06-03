@@ -33,6 +33,42 @@ def generate_tone(freq: float, duration: float,
     return np.sin(2 * np.pi * freq * t).astype(config.DTYPE)
 
 
+def _generate_tone_sequence(tones: list[tuple[float, float]],
+                            sample_rate: int = config.SAMPLE_RATE) -> np.ndarray:
+    """Generate tones while carrying oscillator phase across boundaries."""
+    segments: list[np.ndarray] = []
+    phase = 0.0
+
+    for freq, duration in tones:
+        n_samples = int(sample_rate * duration)
+        if n_samples <= 0:
+            continue
+
+        phase_step = 2 * np.pi * freq / sample_rate
+        phases = phase + phase_step * np.arange(n_samples)
+        segments.append(np.sin(phases).astype(config.DTYPE))
+        phase = (phase + phase_step * n_samples) % (2 * np.pi)
+
+    if not segments:
+        return np.array([], dtype=config.DTYPE)
+    return np.concatenate(segments)
+
+
+def apply_release_ramp(waveform: np.ndarray,
+                       duration: float = config.TX_RELEASE_DURATION,
+                       sample_rate: int = config.SAMPLE_RATE) -> np.ndarray:
+    """Return `waveform` with a short fade-out over its final samples."""
+    ramp_samples = int(sample_rate * duration)
+    if len(waveform) == 0 or ramp_samples <= 0:
+        return waveform.astype(config.DTYPE, copy=True)
+
+    ramp_samples = min(ramp_samples, len(waveform))
+    faded = waveform.astype(config.DTYPE, copy=True)
+    ramp = np.linspace(1.0, 0.0, ramp_samples, dtype=config.DTYPE)
+    faded[-ramp_samples:] *= ramp
+    return faded
+
+
 def bits_to_waveform(bits: list[int],
                      sample_rate: int = config.SAMPLE_RATE) -> np.ndarray:
     """
@@ -54,33 +90,30 @@ def bits_to_waveform(bits: list[int],
     the bits are simply paired into data dibits with no framing tones
     (odd-length inputs are zero-padded to even length).
     """
-    segments: list[np.ndarray] = []
-
-    segments.append(generate_tone(config.PREAMBLE_FREQ, config.PREAMBLE_DURATION,
-                                  sample_rate))
+    tones: list[tuple[float, float]] = [
+        (config.PREAMBLE_FREQ, config.PREAMBLE_DURATION),
+    ]
 
     if len(bits) > 0 and len(bits) % 10 == 0:
         # Full UART frames — START tone, 4 data tones, STOP tone.
         for frame_start in range(0, len(bits), 10):
             frame = bits[frame_start:frame_start + 10]
-            segments.append(generate_tone(config.FREQ_START,
-                                          config.SYMBOL_DURATION, sample_rate))
+            tones.append((config.FREQ_START, config.SYMBOL_DURATION))
             data = frame[1:9]  # 8 data bits, LSB-first
             for j in range(4):
                 sym = (data[2 * j] << 1) | data[2 * j + 1]
-                segments.append(generate_tone(config.DATA_FREQUENCIES[sym],
-                                              config.SYMBOL_DURATION, sample_rate))
-            segments.append(generate_tone(config.FREQ_STOP,
-                                          config.SYMBOL_DURATION, sample_rate))
+                tones.append((config.DATA_FREQUENCIES[sym],
+                              config.SYMBOL_DURATION))
+            tones.append((config.FREQ_STOP, config.SYMBOL_DURATION))
     else:
         # Non-frame input (edge cases / tests) — simple sequential dibit pairing.
         padded = bits if len(bits) % 2 == 0 else bits + [0]
         for i in range(0, len(padded), 2):
             sym = (padded[i] << 1) | padded[i + 1]
-            segments.append(generate_tone(config.DATA_FREQUENCIES[sym],
-                                          config.SYMBOL_DURATION, sample_rate))
+            tones.append((config.DATA_FREQUENCIES[sym],
+                          config.SYMBOL_DURATION))
 
-    return np.concatenate(segments)
+    return _generate_tone_sequence(tones, sample_rate)
 
 
 # ── Goertzel algorithm ───────────────────────────────────────────────────────

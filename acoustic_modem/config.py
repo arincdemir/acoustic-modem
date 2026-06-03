@@ -53,6 +53,10 @@ SAMPLE_RATE = 44100         # Hz
 CHANNELS = 1
 DTYPE = "float32"
 
+# Short fade-out applied only at the end of a transmission, before trailing
+# silence, to avoid an audible click when playback stops.
+TX_RELEASE_DURATION = 0.005  # s
+
 # ── Receiver squelch / detection ─────────────────────────────────────────────
 NOISE_FLOOR = 3e-4
 

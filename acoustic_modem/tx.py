@@ -3,7 +3,6 @@ tx.py — Transmitter: text → framed bits → audio waveform → playback.
 """
 
 import numpy as np
-import sounddevice as sd
 
 from acoustic_modem import config, framing, dsp
 
@@ -21,6 +20,7 @@ def build_waveform(text: str,
     """
     bits = framing.frame_message(text)
     waveform = dsp.bits_to_waveform(bits, sample_rate)
+    waveform = dsp.apply_release_ramp(waveform, sample_rate=sample_rate)
     
     # Pad the end with 0.2s of silence so the audio driver 
     # doesn't truncate the final stop bit when the stream closes.
@@ -43,6 +43,8 @@ def transmit_message(text: str,
     """
     if not text:
         return
+
+    import sounddevice as sd
 
     waveform = build_waveform(text, sample_rate)
     sd.play(waveform, samplerate=sample_rate, device=device,

@@ -5,6 +5,8 @@ tests/test_dsp.py — Unit tests for the DSP module (six-tone FSK).
 import numpy as np
 import pytest
 from acoustic_modem import dsp, config
+from acoustic_modem import framing
+from acoustic_modem.tx import build_waveform
 
 
 SR = config.SAMPLE_RATE
@@ -102,6 +104,39 @@ class TestBitsToWaveform:
         assert sym == config.STOP_INDEX, (
             f"Preamble chunk should be the STOP tone (index {config.STOP_INDEX}), got {sym}"
         )
+
+    def test_symbol_boundaries_are_phase_continuous(self):
+        bits = framing.frame_message("A")
+        wav = dsp.bits_to_waveform(bits, SR)
+        preamble_samples = int(SR * config.PREAMBLE_DURATION)
+        symbol_samples = int(SR * config.SYMBOL_DURATION)
+        boundaries = [
+            preamble_samples + i * symbol_samples
+            for i in range(6)
+        ]
+        data = bits[1:9]
+        data_freqs = [
+            config.DATA_FREQUENCIES[(data[2 * j] << 1) | data[2 * j + 1]]
+            for j in range(4)
+        ]
+        previous_freqs = [
+            config.PREAMBLE_FREQ,
+            config.FREQ_START,
+            *data_freqs,
+        ]
+
+        for boundary, previous_freq in zip(boundaries, previous_freqs):
+            jump = abs(float(wav[boundary] - wav[boundary - 1]))
+            max_continuous_jump = 2 * np.sin(np.pi * previous_freq / SR)
+            assert jump <= max_continuous_jump + 1e-3
+
+    def test_build_waveform_releases_to_silence(self):
+        wav = build_waveform("A", SR)
+        silence_samples = int(SR * 0.2)
+        final_audible_index = len(wav) - silence_samples - 1
+
+        assert wav[final_audible_index] == pytest.approx(0.0, abs=1e-6)
+        assert np.all(wav[-silence_samples:] == 0.0)
 
 
 class TestIsAboveNoiseFloor:
