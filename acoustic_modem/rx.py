@@ -2,10 +2,20 @@
 rx.py — Receiver: audio stream → 4-state machine → decoded characters.
 
 State machine:
-    IDLE     → waiting for preamble (3 squelch conditions must all pass)
-    ARMED    → preamble detected, waiting for start bit (2000 Hz / logic 0)
-    READING  → clocked: sampling 8 data bits then stop bit
+    IDLE     → waiting for preamble (PREAMBLE_FREQ == STOP tone must be stable)
+    ARMED    → preamble detected, waiting for the START tone
+    READING  → clocked: sampling 4 data tones then 1 STOP tone
     WAITING  → between characters in the same message; no new preamble needed
+
+Six-tone FSK (see config.py / dsp.py):
+    Data tones (index 0–3): FREQ_00, FREQ_01, FREQ_10, FREQ_11  (one dibit each)
+    START tone (index 4):   FREQ_START   — the single start bit
+    STOP  tone (index 5):   FREQ_STOP    — the single stop bit (and idle/preamble)
+
+Each UART frame (10 bits) is transmitted as 6 tones:
+    START, [d0 d1], [d2 d3], [d4 d5], [d6 d7], STOP
+Because START and STOP have their own dedicated frequencies, the receiver can
+never confuse a framing bit with a data symbol.
 
 The receiver can operate in two modes:
   • Live mode:    reads from the microphone via sounddevice.InputStream.
@@ -86,6 +96,9 @@ class Receiver:
         self._preamble_chunks = 0   # consecutive chunks detecting preamble
         self._data_bits: list[int] = []
         self._waiting_chunks = 0    # chunks elapsed since entering WAITING
+        self._samples_to_skip = 0           # chunks to skip until the next sample point
+        self._data_symbols_remaining = 0    # data tones still to read in this frame
+        self._reading_stop = False          # True once the next tone is the STOP tone
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -175,9 +188,9 @@ class Receiver:
                 # Pad the final short chunk with silence
                 chunk = np.pad(chunk, (0, chunk_size - len(chunk)))
             self._process_chunk(chunk)
-        # Feed a silence chunk to flush the WAITING→IDLE timeout
+        # Feed silence to flush the WAITING→IDLE timeout.
         silence = np.zeros(chunk_size, dtype=config.DTYPE)
-        for _ in range(int(config.INTER_CHAR_TIMEOUT / config.CHUNK_DURATION) + 2):
+        for _ in range(_INTER_CHAR_TIMEOUT_CHUNKS + 2):
             self._process_chunk(silence)
 
     # ── State machine ─────────────────────────────────────────────────────────
@@ -203,9 +216,9 @@ class Receiver:
 
     def _handle_idle(self, chunk: np.ndarray) -> None:
         """
-        Check three squelch conditions for the preamble (3000 Hz):
+        Check three squelch conditions for the preamble (PREAMBLE_FREQ == STOP tone):
           1. Above noise floor (RMS threshold)
-          2. SNR — FREQ_1 dominates the spectrum
+          2. SNR — PREAMBLE_FREQ dominates the spectrum (detect_symbol == STOP_INDEX)
           3. Chunk-count lock — tone must be stable for PREAMBLE_LOCK_CHUNKS consecutive chunks
 
         Timing is tracked in chunk counts (not wall-clock time) so that
@@ -213,7 +226,9 @@ class Receiver:
         identically to live mode.
         """
         above_floor = dsp.is_above_noise_floor(chunk)
-        preamble_detected = above_floor and (dsp.detect_bit(chunk, self._sample_rate) == 1)
+        preamble_detected = above_floor and (
+            dsp.detect_symbol(chunk, self._sample_rate) == config.STOP_INDEX
+        )
 
         if preamble_detected:
             self._preamble_chunks += 1
@@ -224,87 +239,79 @@ class Receiver:
         else:
             self._preamble_chunks = 0   # reset lock counter
 
-    # ── ARMED: wait for start bit (0 = 2000 Hz) ──────────────────────────────
+    # ── ARMED: wait for the START tone ───────────────────────────────────────
 
     def _handle_armed(self, chunk: np.ndarray) -> None:
-        """Wait for the transition from preamble (FREQ_1) to start bit (FREQ_0)."""
+        """
+        Wait for the transition from the preamble (STOP tone) to the START tone.
+
+        The START tone is a dedicated frequency (index 4) and carries no data —
+        it only marks the beginning of a frame.
+        """
         if not dsp.is_above_noise_floor(chunk):
             # Lost the signal entirely — back to IDLE
             self._set_state(RxState.IDLE)
             return
 
-        bit = dsp.detect_bit(chunk, self._sample_rate)
-        if bit == 0:
-            # Start bit detected — begin reading data bits
-            self._data_bits = []
-            self._set_state(RxState.READING)
-            # Consume the start bit: schedule first data sample at 1.5 × BIT_DURATION
-            # We achieve this by skipping 1.5 bit-durations worth of chunks.
-            self._samples_to_skip = int(
-                1.5 * config.BIT_DURATION / config.CHUNK_DURATION
-            )
-            self._bits_remaining = config.DATA_BITS
-            self._reading_stop = False  # next after data is the stop bit
+        if dsp.detect_symbol(chunk, self._sample_rate) == config.START_INDEX:
+            self._begin_reading()
 
-    # ── READING: clock in data bits then stop bit ─────────────────────────────
+    # ── READING: clock in 4 data tones then the STOP tone ────────────────────
 
     def _handle_reading(self, chunk: np.ndarray) -> None:
         """
-        After the start-bit edge we sample at:
-          • 1.5 × BIT_DURATION  for the first data bit
-          • every 1.0 × BIT_DURATION  for subsequent bits
-        We count chunks to track timing.
+        After the START tone we sample at:
+          • 1.5 × SYMBOL_DURATION  for the first data tone (centre of the symbol)
+          • every 1.0 × SYMBOL_DURATION  for subsequent symbols
+
+        _data_symbols_remaining counts the data tones still to read (4 in total,
+        2 bits each).  Once all four are read the next sample is the STOP tone.
         """
         if self._samples_to_skip > 0:
             self._samples_to_skip -= 1
             return
 
-        bit = dsp.detect_bit(chunk, self._sample_rate)
+        sym = dsp.detect_symbol(chunk, self._sample_rate)
 
-        if bit == -1:
-            # Signal corrupted or lost, abort character
-            self._data_bits = []
-            self._waiting_chunks = 0
-            self._set_state(RxState.WAITING)
+        if sym == -1:
+            # Signal corrupted or lost — abort character
+            self._enter_waiting()
             return
 
-        if not self._reading_stop and self._bits_remaining > 0:
-            # Reading a data bit
-            self._data_bits.append(bit)
-            self._bits_remaining -= 1
-            if self._bits_remaining == 0:
-                # Done with data — next sample is the stop bit
+        if not self._reading_stop:
+            # Expect a data tone (index 0–3); anything else means a corrupt frame.
+            if sym not in (0, 1, 2, 3):
+                self._enter_waiting()
+                return
+            # Data symbol: extract 2 bits (MSB first)
+            self._data_bits.append((sym >> 1) & 1)
+            self._data_bits.append(sym & 1)
+            self._data_symbols_remaining -= 1
+            if self._data_symbols_remaining == 0:
+                # Done with data tones — the next sample is the STOP tone
                 self._reading_stop = True
-                self._samples_to_skip = int(
-                    1.0 * config.BIT_DURATION / config.CHUNK_DURATION
-                ) - 1
-        elif self._reading_stop:
-            # This is the stop bit sample
-            if bit == 1:
-                # Valid stop bit — decode and emit character
+            self._samples_to_skip = self._symbol_skip()
+        else:
+            # Expect the STOP tone (index 5).  A valid STOP completes the frame.
+            if sym == config.STOP_INDEX:
                 try:
                     char = self._decode_char(self._data_bits)
                     self._on_char(char)
                 except ValueError:
                     pass  # corrupted frame — silently discard
-            # Either way, transition to WAITING for the next start bit
-            self._data_bits = []
-            self._waiting_chunks = 0
-            self._set_state(RxState.WAITING)
+            # Whether the STOP tone was valid or not, this frame is finished.
+            self._enter_waiting()
 
-        # Schedule next sample 1 bit duration away
-        if self._state == RxState.READING:
-            self._samples_to_skip = int(
-                1.0 * config.BIT_DURATION / config.CHUNK_DURATION
-            ) - 1
-
-    # ── WAITING: listen for next start bit without a new preamble ────────────
+    # ── WAITING: listen for the next START tone without a new preamble ───────
 
     def _handle_waiting(self, chunk: np.ndarray) -> None:
         """
-        Between characters in the same message: listen for 2000 Hz (start bit).
-        If no start bit is seen within INTER_CHAR_TIMEOUT_CHUNKS chunks, go to IDLE.
-        Timing uses chunk counts for consistency with loopback mode.
+        Between characters in the same message: listen for the START tone
+        (index 4).  If none is seen within INTER_CHAR_TIMEOUT_CHUNKS chunks,
+        go to IDLE.  Timing uses chunk counts for consistency with loopback mode.
+
+        The STOP tone (index 5) at the end of the previous frame cannot trigger
+        the START-tone check, so no extra guard is required.
         """
         self._waiting_chunks += 1
         if self._waiting_chunks > _INTER_CHAR_TIMEOUT_CHUNKS:
@@ -312,16 +319,32 @@ class Receiver:
             return
 
         if dsp.is_above_noise_floor(chunk):
-            bit = dsp.detect_bit(chunk, self._sample_rate)
-            if bit == 0:
-                # Next start bit found — go straight to READING
-                self._data_bits = []
-                self._set_state(RxState.READING)
-                self._samples_to_skip = int(
-                    1.5 * config.BIT_DURATION / config.CHUNK_DURATION
-                )
-                self._bits_remaining = config.DATA_BITS
-                self._reading_stop = False
+            if dsp.detect_symbol(chunk, self._sample_rate) == config.START_INDEX:
+                self._begin_reading()
+
+    # ── Reading helpers ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _symbol_skip() -> int:
+        """Chunks to skip to advance exactly one symbol to the next sample."""
+        return int(1.0 * config.SYMBOL_DURATION / config.CHUNK_DURATION) - 1
+
+    def _begin_reading(self) -> None:
+        """Start reading a frame after a START tone: 4 data tones then STOP."""
+        self._data_bits = []
+        self._data_symbols_remaining = 4
+        self._reading_stop = False
+        # Skip to the centre of the first data symbol (1.5 × SYMBOL_DURATION away).
+        self._samples_to_skip = int(
+            1.5 * config.SYMBOL_DURATION / config.CHUNK_DURATION
+        )
+        self._set_state(RxState.READING)
+
+    def _enter_waiting(self) -> None:
+        """Finish the current frame and listen for the next START tone."""
+        self._data_bits = []
+        self._waiting_chunks = 0
+        self._set_state(RxState.WAITING)
 
     # ── Decoding helper ───────────────────────────────────────────────────────
 

@@ -1,9 +1,22 @@
 """
-dsp.py — DSP utilities: tone generation, Goertzel energy, bit detection.
+dsp.py — DSP utilities: tone generation, Goertzel energy, symbol detection.
 
-Two-frequency FSK:
-  Logic 0  →  FREQ_0  (2000 Hz)
-  Logic 1  →  FREQ_1  (3000 Hz)
+Six-tone FSK on the A blues scale (see config.py).  The tones split into two
+roles:
+
+  Data tones (4-FSK, two bits each):
+    Dibit 00  →  FREQ_00  (880 Hz)
+    Dibit 01  →  FREQ_01  (1319 Hz)
+    Dibit 10  →  FREQ_10  (2093 Hz)
+    Dibit 11  →  FREQ_11  (3136 Hz)
+
+  Single-bit framing tones:
+    START     →  FREQ_START (587 Hz)   — index 4
+    STOP      →  FREQ_STOP  (4699 Hz)  — index 5 (also the preamble/idle tone)
+
+A character frame is transmitted as 6 symbols: START + 4 data dibits + STOP.
+`detect_symbol` returns the index (0–5) of the dominant tone, or -1 if none
+clears the SNR threshold.
 """
 
 import numpy as np
@@ -23,21 +36,49 @@ def generate_tone(freq: float, duration: float,
 def bits_to_waveform(bits: list[int],
                      sample_rate: int = config.SAMPLE_RATE) -> np.ndarray:
     """
-    Convert a flat bit list into a complete audio waveform.
+    Convert a flat bit list into a complete six-tone FSK audio waveform.
 
-    Prepends the preamble (PREAMBLE_DURATION of FREQ_1), then maps each bit
-    to a tone segment of BIT_DURATION seconds.
+    Prepends the preamble (PREAMBLE_DURATION of PREAMBLE_FREQ), then encodes
+    the bits as a sequence of tones, each SYMBOL_DURATION seconds long.
+
+    UART-frame-aware encoding (when len(bits) is a multiple of 10):
+        Each 10-bit frame [start, d0..d7, stop] becomes 6 tones:
+          • One START tone   (FREQ_START) — the single start bit.
+          • Four data tones  — the 8 data bits, two bits per tone (MSB-first):
+                sym = (data[2j] << 1) | data[2j+1]
+          • One STOP tone    (FREQ_STOP)  — the single stop bit.
+        Because START and STOP have their own dedicated frequencies, the
+        receiver can never confuse a framing bit with a data symbol.
+
+    For inputs that are NOT multiples of 10 bits (edge cases / unit tests),
+    the bits are simply paired into data dibits with no framing tones
+    (odd-length inputs are zero-padded to even length).
     """
     segments: list[np.ndarray] = []
 
-    # Preamble
-    segments.append(generate_tone(config.FREQ_1, config.PREAMBLE_DURATION,
+    segments.append(generate_tone(config.PREAMBLE_FREQ, config.PREAMBLE_DURATION,
                                   sample_rate))
 
-    # Bit segments
-    for bit in bits:
-        freq = config.FREQ_1 if bit == 1 else config.FREQ_0
-        segments.append(generate_tone(freq, config.BIT_DURATION, sample_rate))
+    if len(bits) > 0 and len(bits) % 10 == 0:
+        # Full UART frames — START tone, 4 data tones, STOP tone.
+        for frame_start in range(0, len(bits), 10):
+            frame = bits[frame_start:frame_start + 10]
+            segments.append(generate_tone(config.FREQ_START,
+                                          config.SYMBOL_DURATION, sample_rate))
+            data = frame[1:9]  # 8 data bits, LSB-first
+            for j in range(4):
+                sym = (data[2 * j] << 1) | data[2 * j + 1]
+                segments.append(generate_tone(config.DATA_FREQUENCIES[sym],
+                                              config.SYMBOL_DURATION, sample_rate))
+            segments.append(generate_tone(config.FREQ_STOP,
+                                          config.SYMBOL_DURATION, sample_rate))
+    else:
+        # Non-frame input (edge cases / tests) — simple sequential dibit pairing.
+        padded = bits if len(bits) % 2 == 0 else bits + [0]
+        for i in range(0, len(padded), 2):
+            sym = (padded[i] << 1) | padded[i + 1]
+            segments.append(generate_tone(config.DATA_FREQUENCIES[sym],
+                                          config.SYMBOL_DURATION, sample_rate))
 
     return np.concatenate(segments)
 
@@ -48,7 +89,7 @@ def goertzel_energy(signal: np.ndarray, target_freq: float,
                     sample_rate: int = config.SAMPLE_RATE) -> float:
     """
     Compute the energy (power) of `signal` at `target_freq` Hz using the
-    Goertzel algorithm — more efficient than a full FFT for one or two
+    Goertzel algorithm — more efficient than a full FFT for a small number of
     target frequencies.
 
     Returns a non-negative float.
@@ -68,7 +109,6 @@ def goertzel_energy(signal: np.ndarray, target_freq: float,
         s_prev2 = s_prev1
         s_prev1 = s
 
-    # Power = s_prev1^2 + s_prev2^2 - coeff * s_prev1 * s_prev2
     power = s_prev1 ** 2 + s_prev2 ** 2 - coeff * s_prev1 * s_prev2
     return max(power, 0.0)
 
@@ -78,24 +118,25 @@ def total_energy(signal: np.ndarray) -> float:
     return float(np.dot(signal, signal))
 
 
-# ── Bit detection ─────────────────────────────────────────────────────────────
+# ── Symbol detection ─────────────────────────────────────────────────────────
 
-def detect_bit(chunk: np.ndarray,
-               sample_rate: int = config.SAMPLE_RATE) -> int:
+def detect_symbol(chunk: np.ndarray,
+                  sample_rate: int = config.SAMPLE_RATE) -> int:
     """
-    Determine the logic value of `chunk` by checking if the SNR for FREQ_0 or FREQ_1
-    is above the threshold. Returns 1 if FREQ_1 is dominant and valid, 0 if FREQ_0
-    is dominant and valid, or -1 if neither pass the SNR threshold.
+    Identify which of the six FSK tones is present in `chunk`.
+
+    Computes the SNR for each frequency in config.FREQUENCIES, selects the one
+    with the highest SNR, and returns its index if that SNR clears
+    SNR_THRESHOLD.  Returns -1 if no frequency passes the threshold.
+
+    Index meaning (see config.FREQUENCIES):
+        0–3 → data dibit value, 4 → START tone, 5 → STOP tone.
     """
-    snr_0 = compute_snr(chunk, config.FREQ_0, sample_rate)
-    snr_1 = compute_snr(chunk, config.FREQ_1, sample_rate)
-    
-    if snr_1 >= config.SNR_THRESHOLD and snr_1 >= snr_0:
-        return 1
-    elif snr_0 >= config.SNR_THRESHOLD:
-        return 0
-    else:
-        return -1
+    snrs = [compute_snr(chunk, freq, sample_rate) for freq in config.FREQUENCIES]
+    best = int(np.argmax(snrs))
+    if snrs[best] >= config.SNR_THRESHOLD:
+        return best
+    return -1
 
 
 def compute_snr(chunk: np.ndarray, target_freq: float,
@@ -108,9 +149,6 @@ def compute_snr(chunk: np.ndarray, target_freq: float,
     if total < 1e-12:
         return 0.0
     target = goertzel_energy(chunk, target_freq, sample_rate)
-    # Scale Goertzel power to the same units as total_energy:
-    # Goertzel returns N^2/4 × amplitude^2 for a pure tone.
-    # Normalise by len(chunk)^2 / 4 so SNR is in [0, 1].
     n = len(chunk)
     normalised_target = target / (n ** 2 / 4.0) if n > 0 else 0.0
     return min(normalised_target / (total / n), 1.0)

@@ -1,5 +1,5 @@
 """
-tests/test_dsp.py — Unit tests for the DSP module.
+tests/test_dsp.py — Unit tests for the DSP module (six-tone FSK).
 """
 
 import numpy as np
@@ -26,47 +26,52 @@ class TestGenerateTone:
 
 class TestGoertzelEnergy:
     def test_target_freq_dominates(self):
-        """Energy at the generated frequency should dominate."""
-        for freq in [config.FREQ_0, config.FREQ_1]:
-            tone = dsp.generate_tone(freq, config.BIT_DURATION, SR)
+        """Energy at the generated frequency should dominate all other FSK frequencies."""
+        for i, freq in enumerate(config.FREQUENCIES):
+            tone = dsp.generate_tone(freq, config.SYMBOL_DURATION, SR)
             e_target = dsp.goertzel_energy(tone, freq, SR)
-            other = config.FREQ_1 if freq == config.FREQ_0 else config.FREQ_0
-            e_other = dsp.goertzel_energy(tone, other, SR)
-            assert e_target > e_other * 10, (
-                f"Expected {freq} Hz energy to dominate, got "
-                f"e_target={e_target:.3f} e_other={e_other:.3f}"
-            )
+            for j, other_freq in enumerate(config.FREQUENCIES):
+                if j == i:
+                    continue
+                e_other = dsp.goertzel_energy(tone, other_freq, SR)
+                assert e_target > e_other * 10, (
+                    f"Expected {freq} Hz energy to dominate {other_freq} Hz, "
+                    f"got e_target={e_target:.3f} e_other={e_other:.3f}"
+                )
 
     def test_silent_signal(self):
         silence = np.zeros(1000, dtype=np.float32)
-        assert dsp.goertzel_energy(silence, config.FREQ_0, SR) == pytest.approx(0.0, abs=1e-6)
+        assert dsp.goertzel_energy(silence, config.FREQ_00, SR) == pytest.approx(0.0, abs=1e-6)
 
     def test_empty_signal(self):
-        assert dsp.goertzel_energy(np.array([]), config.FREQ_0, SR) == 0.0
+        assert dsp.goertzel_energy(np.array([]), config.FREQ_00, SR) == 0.0
 
     def test_non_negative(self):
         noise = np.random.randn(SR).astype(np.float32) * 0.01
-        assert dsp.goertzel_energy(noise, config.FREQ_0, SR) >= 0.0
+        assert dsp.goertzel_energy(noise, config.FREQ_00, SR) >= 0.0
 
 
-class TestDetectBit:
-    def test_freq0_returns_0(self):
-        tone = dsp.generate_tone(config.FREQ_0, config.BIT_DURATION, SR)
-        assert dsp.detect_bit(tone, SR) == 0
+class TestDetectSymbol:
+    def test_each_symbol_clean(self):
+        """Each of the 6 pure tones should map to its correct index."""
+        for sym_val, freq in enumerate(config.FREQUENCIES):
+            tone = dsp.generate_tone(freq, config.SYMBOL_DURATION, SR)
+            assert dsp.detect_symbol(tone, SR) == sym_val, (
+                f"Tone at {freq} Hz should be detected as symbol {sym_val}"
+            )
 
-    def test_freq1_returns_1(self):
-        tone = dsp.generate_tone(config.FREQ_1, config.BIT_DURATION, SR)
-        assert dsp.detect_bit(tone, SR) == 1
+    def test_each_symbol_with_light_noise(self):
+        """Symbol detection should survive 5 % Gaussian noise."""
+        for sym_val, freq in enumerate(config.FREQUENCIES):
+            tone = dsp.generate_tone(freq, config.SYMBOL_DURATION, SR)
+            noise = np.random.randn(len(tone)).astype(np.float32) * 0.05
+            assert dsp.detect_symbol(tone + noise, SR) == sym_val, (
+                f"Tone at {freq} Hz with noise should still be symbol {sym_val}"
+            )
 
-    def test_freq0_with_light_noise(self):
-        tone = dsp.generate_tone(config.FREQ_0, config.BIT_DURATION, SR)
-        noise = np.random.randn(len(tone)).astype(np.float32) * 0.05
-        assert dsp.detect_bit(tone + noise, SR) == 0
-
-    def test_freq1_with_light_noise(self):
-        tone = dsp.generate_tone(config.FREQ_1, config.BIT_DURATION, SR)
-        noise = np.random.randn(len(tone)).astype(np.float32) * 0.05
-        assert dsp.detect_bit(tone + noise, SR) == 1
+    def test_silence_returns_minus_one(self):
+        silence = np.zeros(int(SR * config.SYMBOL_DURATION), dtype=np.float32)
+        assert dsp.detect_symbol(silence, SR) == -1
 
 
 class TestBitsToWaveform:
@@ -76,16 +81,27 @@ class TestBitsToWaveform:
         expected_len = int(SR * config.PREAMBLE_DURATION)
         assert len(wav) == expected_len
 
-    def test_single_bit_length(self):
+    def test_single_bit_padded_to_one_symbol(self):
+        """One bit is zero-padded to a dibit → one symbol appended."""
         wav = dsp.bits_to_waveform([0], SR)
-        expected_len = int(SR * (config.PREAMBLE_DURATION + config.BIT_DURATION))
+        expected_len = int(SR * (config.PREAMBLE_DURATION + config.SYMBOL_DURATION))
         assert len(wav) == expected_len
 
-    def test_10_bits_length(self):
+    def test_10_bits_six_symbols(self):
+        """One UART frame = START + 4 data + STOP → preamble + 6 symbol segments."""
         bits = [0, 1, 0, 0, 0, 1, 0, 0, 0, 1]  # one UART frame
         wav = dsp.bits_to_waveform(bits, SR)
-        expected = int(SR * (config.PREAMBLE_DURATION + 10 * config.BIT_DURATION))
+        # Match how bits_to_waveform accumulates lengths to avoid FP rounding.
+        expected = int(SR * config.PREAMBLE_DURATION) + 6 * int(SR * config.SYMBOL_DURATION)
         assert len(wav) == expected
+
+    def test_preamble_tone_is_preamble_freq(self):
+        """A chunk-sized window of PREAMBLE_FREQ should be detected as the STOP tone."""
+        chunk = dsp.generate_tone(config.PREAMBLE_FREQ, config.CHUNK_DURATION, SR)
+        sym = dsp.detect_symbol(chunk, SR)
+        assert sym == config.STOP_INDEX, (
+            f"Preamble chunk should be the STOP tone (index {config.STOP_INDEX}), got {sym}"
+        )
 
 
 class TestIsAboveNoiseFloor:
@@ -94,5 +110,5 @@ class TestIsAboveNoiseFloor:
         assert not dsp.is_above_noise_floor(silence)
 
     def test_loud_tone_is_above_floor(self):
-        tone = dsp.generate_tone(config.FREQ_1, 0.1, SR)
+        tone = dsp.generate_tone(config.PREAMBLE_FREQ, 0.1, SR)
         assert dsp.is_above_noise_floor(tone)

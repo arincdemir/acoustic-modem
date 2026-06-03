@@ -2,21 +2,51 @@
 config.py — All tuneable constants for the acoustic modem.
 """
 
-# ── Frequencies ──────────────────────────────────────────────────────────────
-FREQ_0 = 2000       # Hz  —  Logic 0
-FREQ_1 = 3000       # Hz  —  Logic 1
+# ── Frequencies (6-tone FSK on the A blues scale) ─────────────────────────────
+# Every tone is a note of the A blues scale, whose six pitch classes (semitones
+# above A) are {0, 3, 5, 6, 7, 10} = A, C, D, D#, E, G.  The notes are spread
+# across several octaves so that neighbouring tones are ~7 semitones (a ~1.5×
+# frequency ratio) apart — i.e. as far from one another as possible — which
+# keeps detection robust and unambiguous.
+#
+# Roles:
+#   • 4 "data" tones carry one dibit each (4-FSK) → the 8 data bits.
+#   • 1 dedicated tone marks the START bit (single bit, its own frequency).
+#   • 1 dedicated tone marks the STOP bit  (single bit, its own frequency).
+#
+# Data tones (4-FSK), indexed by dibit value (0–3):
+FREQ_00 = 880        # Hz — A5 — dibit 00
+FREQ_01 = 1319       # Hz — E6 — dibit 01
+FREQ_10 = 2093       # Hz — C7 — dibit 10
+FREQ_11 = 3136       # Hz — G7 — dibit 11
+
+# Single-bit framing tones:
+FREQ_START = 587     # Hz — D5 — start-of-frame marker
+FREQ_STOP  = 4699    # Hz — D8 — stop-of-frame marker (also the idle/preamble tone)
+
+DATA_FREQUENCIES = [FREQ_00, FREQ_01, FREQ_10, FREQ_11]   # indexed by dibit value (0–3)
+
+# All six tones in a fixed index order shared by the detector and the receiver:
+#   indices 0..3 → data dibits, index 4 → START, index 5 → STOP.
+FREQUENCIES = DATA_FREQUENCIES + [FREQ_START, FREQ_STOP]
+START_INDEX = 4
+STOP_INDEX  = 5
+
+# The UART idle line rests at the mark (stop) level, so we reuse the STOP tone
+# as the preamble / idle tone.
+PREAMBLE_FREQ = FREQ_STOP
 
 # ── Baud / timing ────────────────────────────────────────────────────────────
-BAUD_RATE = 5                         # bits per second
-BIT_DURATION = 1.0 / BAUD_RATE        # seconds per bit
+BAUD_RATE = 5                           # symbols (tones) per second
+SYMBOL_DURATION = 1.0 / BAUD_RATE      # seconds per symbol
 
 # ── UART frame ───────────────────────────────────────────────────────────────
 DATA_BITS = 8
-# Total bits per character frame: 1 start + 8 data + 1 stop = 10
-# Time per character = 10 × BIT_DURATION
+# Tones per character frame: 1 START + 4 data dibits + 1 STOP = 6 symbols.
+# Time per character = 6 × SYMBOL_DURATION
 
 # ── Preamble ─────────────────────────────────────────────────────────────────
-PREAMBLE_DURATION = 0.4     # s — 300 ms of FREQ_1 before first character
+PREAMBLE_DURATION = 0.4     # s — 400 ms of PREAMBLE_FREQ before first character
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
 SAMPLE_RATE = 44100         # Hz
@@ -24,28 +54,24 @@ CHANNELS = 1
 DTYPE = "float32"
 
 # ── Receiver squelch / detection ─────────────────────────────────────────────
-# Minimum RMS amplitude to avoid triggering on silence. Tune for your hardware:
-#   • Lower (e.g. 1e-5) if the transmitting laptop is quiet or far away.
-#   • Raise (e.g. 5e-4) if background noise keeps falsely triggering the receiver.
 NOISE_FLOOR = 3e-4
 
-# Fraction of total spectral energy that must be at FREQ_1 to count as preamble.
-# Human voices are broadband; our FSK tones are narrowband, so this can be high.
-#   • Lower (e.g. 0.25) in noisy rooms where background raises the noise floor.
+# Fraction of total spectral energy that must be at the dominant frequency.
+# Human voices are broadband; FSK tones are narrowband, so this can be high.
+#   • Lower (e.g. 0.25) in noisy rooms.
 #   • Keep at 0.40+ in quiet rooms for best false-positive rejection.
-SNR_THRESHOLD = 0.40        # 40 % of total energy must be at FREQ_1
+SNR_THRESHOLD = 0.40
 
-# How long FREQ_1 must be continuously stable before the Rx "arms" itself.
-# Must be < PREAMBLE_DURATION (200 ms). Raise to reduce false triggers.
+# How long PREAMBLE_FREQ must be continuously stable before the Rx "arms" itself.
+# Must be < PREAMBLE_DURATION.
 PREAMBLE_LOCK_DURATION = 0.2   # s
 
-# After the last stop bit, how long to wait for the next start bit before
-# returning to IDLE.  MUST be > BIT_DURATION or multi-character messages break.
-# Derived automatically so it stays correct when BAUD_RATE is changed.
-INTER_CHAR_TIMEOUT = 1.5 * BIT_DURATION   # s  (1.5 bit-durations of headroom)
+# After the last stop symbol, how long to wait for the next start symbol before
+# returning to IDLE.  MUST be > SYMBOL_DURATION or multi-character messages break.
+INTER_CHAR_TIMEOUT = 1.5 * SYMBOL_DURATION   # s  (1.5 symbol-durations of headroom)
 
 # ── Analysis chunk ───────────────────────────────────────────────────────────
-# We analyse audio in chunks of this size. Must be << BIT_DURATION.
+# We analyse audio in chunks of this size. Must be << SYMBOL_DURATION.
 # Smaller = more responsive; larger = better frequency resolution.
 CHUNK_DURATION = 0.02       # s  (20 ms)
 CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION)   # samples per chunk

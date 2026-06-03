@@ -100,16 +100,23 @@ def run_diagnose(input_device: int | None) -> None:
     Use this to tune NOISE_FLOOR and SNR_THRESHOLD before a real two-machine test.
 
     Output columns:
-        RMS       — overall mic level  (compare to NOISE_FLOOR)
-        SNR_1     — SNR for FREQ_1 (compare to SNR_THRESHOLD)
-        SNR_0     — SNR for FREQ_0 (compare to SNR_THRESHOLD)
-        state     — what the receiver would decide
+        RMS          — overall mic level  (compare to NOISE_FLOOR)
+        SNR_*        — SNR for each of the six FSK frequencies
+        detected     — which tone (or state) the receiver would decide
     """
+    _sym_labels = ["SNR_00", "SNR_01", "SNR_10", "SNR_11", "SNR_START", "SNR_STOP"]
+    _freq_labels = [
+        f"{lbl[4:]} ({freq} Hz)"
+        for lbl, freq in zip(_sym_labels, config.FREQUENCIES)
+    ]
+
     print("Diagnose mode — listening to microphone. Press Ctrl-C to stop.")
     print(f"Config: NOISE_FLOOR={config.NOISE_FLOOR:.0e}  "
-          f"SNR_THRESHOLD={config.SNR_THRESHOLD:.2f}\n")
-    print(f"{'RMS':>10}  {'SNR_1':>10}  {'SNR_0':>10}  state")
-    print("-" * 50)
+          f"SNR_THRESHOLD={config.SNR_THRESHOLD:.2f}")
+    print("Frequencies: " + "  ".join(_freq_labels) + "\n")
+    header = f"{'RMS':>10}  " + "  ".join(f"{l:>10}" for l in _sym_labels) + "  detected"
+    print(header)
+    print("-" * 72)
 
     chunk_buf: list[np.ndarray] = []
 
@@ -130,29 +137,30 @@ def run_diagnose(input_device: int | None) -> None:
                     sd.sleep(int(config.CHUNK_DURATION * 1000))
                     continue
                 chunk = chunk_buf.pop(0)
-                rms   = float(np.sqrt(np.mean(chunk ** 2)))
-                snr_1 = dsp.compute_snr(chunk, config.FREQ_1, config.SAMPLE_RATE)
-                snr_0 = dsp.compute_snr(chunk, config.FREQ_0, config.SAMPLE_RATE)
+                rms  = float(np.sqrt(np.mean(chunk ** 2)))
+                snrs = [dsp.compute_snr(chunk, freq, config.SAMPLE_RATE)
+                        for freq in config.FREQUENCIES]
+                sym  = dsp.detect_symbol(chunk, config.SAMPLE_RATE)
 
                 above_floor = rms >= config.NOISE_FLOOR
-                snr_1_ok    = snr_1 >= config.SNR_THRESHOLD
-                snr_0_ok    = snr_0 >= config.SNR_THRESHOLD
 
                 if not above_floor:
                     state = "SILENT"
-                elif snr_1_ok and (not snr_0_ok or snr_1 >= snr_0):
-                    state = "FREQ_1"
-                elif snr_0_ok:
-                    state = "FREQ_0"
+                elif sym == config.STOP_INDEX:
+                    state = "STOP / preamble"
+                elif sym == config.START_INDEX:
+                    state = "START"
+                elif sym != -1:
+                    state = f"data (sym {sym} / {sym:02b})"
                 else:
                     state = "noise/voice"
 
                 rms_flag = "✓" if above_floor else "✗"
-                snr_1_flag = "✓" if snr_1_ok else "✗"
-                snr_0_flag = "✓" if snr_0_ok else "✗"
-                
-                print(f"{rms:>9.5f}{rms_flag}  {snr_1:>9.4f}{snr_1_flag}  "
-                      f"{snr_0:>9.4f}{snr_0_flag}  {state}")
+                snr_parts = "  ".join(
+                    f"{s:>9.4f}{'✓' if s >= config.SNR_THRESHOLD else '✗'}"
+                    for s in snrs
+                )
+                print(f"{rms:>9.5f}{rms_flag}  {snr_parts}  {state}")
     except KeyboardInterrupt:
         print("\nDone.")
 
