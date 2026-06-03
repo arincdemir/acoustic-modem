@@ -38,7 +38,6 @@ from enum import Enum, auto
 from typing import Callable
 
 import numpy as np
-import sounddevice as sd
 
 from acoustic_modem import config, dsp
 
@@ -156,6 +155,8 @@ class Receiver:
 
     def _run_live(self) -> None:
         """Open the mic stream and process chunks until stop() is called."""
+        import sounddevice as sd
+
         with sd.InputStream(
             samplerate=self._sample_rate,
             channels=config.CHANNELS,
