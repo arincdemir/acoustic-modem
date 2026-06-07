@@ -1,54 +1,26 @@
 # acoustic-modem
 
-A half-duplex acoustic modem written in Python. It transmits text between two computers using only their built-in speakers and microphones, encoding data as audio tones via **Frequency Shift Keying (FSK)** and structuring frames with a **UART-like protocol**.
+A half-duplex acoustic modem written in Python. It transmits text between two computers using nothing but their built-in speakers and microphones, encoding data as audio tones and framing it with a UART-like protocol.
 
 > **Authors:** Arınç Demir, İrem Önen
 
 ---
 
-## How it works
+## What we built
 
-### Physical layer — FSK modulation
+We built an end-to-end acoustic link: text typed on one laptop is turned into sound, played out of the speaker, picked up by another laptop's microphone, and decoded back into text. The physical layer is a **six-tone FSK scheme** whose frequencies are all notes of the A blues scale, deliberately spread across several octaves so neighbouring tones sit roughly seven semitones (a ~1.5× frequency ratio) apart and are easy to tell apart. Four of those tones are "data" tones used as a **4-FSK constellation**, each tone carries a *dibit* (two bits), so a full 8-bit byte is sent with just four tones. The remaining two tones are dedicated **START** and **STOP** markers. Because framing has its own frequencies, the receiver can never mistake a framing event for data. Each character therefore travels as six symbols, `START · dibit · dibit · dibit · dibit · STOP`, at a baud rate of 5 symbols/second, and a single preamble tone (we reuse the STOP/idle tone) is sent once per message to wake the receiver up.
 
-Each bit is represented by a sine wave at one of two frequencies:
+On the receiving side, audio is processed in short 50 ms chunks. Instead of a full FFT we use the **Goertzel algorithm** to measure the energy at each of our six target frequencies, and we treat the *fraction* of total chunk energy concentrated at the dominant tone as a signal-to-noise ratio. A four-state machine (`IDLE → ARMED → READING → WAITING`) drives decoding: `IDLE` squelches out noise until it sees a stable preamble, `ARMED` waits for the START tone, `READING` clocks in the four data tones plus a STOP tone by sampling at the centre of each symbol, and `WAITING` allows the next character of the same message to arrive without re-sending a preamble. The whole thing runs against a live microphone stream or, for hardware-free testing, against an in-memory waveform buffer (loopback mode), and a `--diagnose` mode prints live per-frequency SNRs to help tune thresholds.
 
-| Logic | Frequency |
-|-------|-----------|
-| `0`   | 2000 Hz   |
-| `1`   | 3000 Hz   |
+## Challenges we overcame
 
-The **baud rate is 10 bits/s** — each bit lasts 100 ms. This deliberately slow rate lets room echoes fully decay before the next bit is sampled, avoiding inter-symbol interference.
+The first audible problem was a sharp click, a "pfft", at every symbol boundary. Each tone was starting its sine wave at phase 0 regardless of where the previous tone ended, creating a discontinuity. We fixed it by carrying the oscillator phase across symbol boundaries so the composite waveform stays continuous, and by applying a short amplitude fade-out (release ramp) at the very end of a transmission. A related glitch was the audio backend closing the output stream the instant the last sample was written, which truncated the final symbol; padding the waveform with a brief tail of silence keeps the stream open long enough for the last tone to play out fully.
 
-### Data link layer — UART framing
+Reliable detection was the harder, longer fight. A naive "whichever frequency has the higher SNR wins" rule is dangerous: any loud broadband sound (a high-pitched voice, a door slam) can make one tone *relatively* dominant and get decoded as data. We addressed this by requiring the winning tone to clear an absolute SNR threshold, gating everything behind a noise-floor (RMS) check, and choosing widely-spaced blues-scale frequencies so genuine tones stand out as narrowband spikes against broadband noise. False preamble triggers were tamed with a squelch that only arms after the preamble tone has been continuously stable for several chunks. Finally, we made all receiver timing **chunk-count based** rather than wall-clock based, so loopback mode (which processes chunks far faster than real time) behaves identically to live mode, this was essential for getting deterministic, testable round-trips.
 
-Each character is sent as a 10-bit UART frame:
+## Shortcomings that remain
 
-```
-[Preamble: 200 ms @ 3000 Hz] [Start: 0] [b0 b1 b2 b3 b4 b5 b6 b7] [Stop: 1]
-```
-
-- **Preamble** is sent **once per message** (not per character) to wake up the receiver.
-- Characters within a message are sent back-to-back — no extra preamble between them.
-- One character = 10 bits = **1 second** at 10 baud.
-
-### Receiver state machine
-
-```
-IDLE → (preamble detected) → ARMED → (start bit) → READING → (stop bit) → WAITING
-                                                                               │
-                                                          ┌────────────────────┘
-                                                          ↓
-                                                    (next start bit, no new preamble)
-                                                       READING → ...
-                                                          │
-                                                   (silence timeout)
-                                                       IDLE
-```
-
-The **squelch** in IDLE requires three conditions before arming:
-1. Signal above the noise floor (RMS threshold).
-2. 3000 Hz energy constitutes ≥ 40% of total spectral energy (narrowband check).
-3. The tone is stable for at least 6 consecutive 20 ms analysis windows (~120 ms).
+The link is **half-duplex and slow**, at 5 baud a single character takes about 1.2 seconds, so it is a proof of concept rather than a practical channel. There is **no error correction or checksum**: the START/STOP tones catch gross framing errors, but a corrupted dibit is silently accepted or the frame is quietly dropped, with no retransmission or ACK. It is **7-bit ASCII only**. And it remains **sensitive to its environment**: it expects the two machines to be within about a metre of each other in a quiet room, and noisy conditions may still require hand-tuning the thresholds in `acoustic_modem/config.py` (`NOISE_FLOOR`, `SNR_THRESHOLD`, `PREAMBLE_LOCK_DURATION`, `INTER_CHAR_TIMEOUT`).
 
 ---
 
@@ -104,6 +76,14 @@ python -m acoustic_modem
 
 Place the two laptops within ~1–2 metres of each other. Ensure neither machine is playing audio and the room is reasonably quiet.
 
+### Diagnose mode (tuning)
+
+Prints live microphone metrics, overall RMS level and the per-frequency SNRs, so you can tune `NOISE_FLOOR` and `SNR_THRESHOLD` before a real two-machine test.
+
+```bash
+python -m acoustic_modem --diagnose
+```
+
 ### List audio devices
 
 ```bash
@@ -121,53 +101,13 @@ python -m acoustic_modem --input-device 1 --output-device 3
 | Flag | Description |
 |------|-------------|
 | `--loopback TEXT` | Run in-process loopback test with `TEXT` |
+| `--diagnose` | Show live microphone signal levels to help tune thresholds |
 | `--input-device N` | sounddevice input device index |
 | `--output-device N` | sounddevice output device index |
 | `--list-devices` | Print available audio devices and exit |
 
----
-
-## Running the tests
+### Running the tests
 
 ```bash
 pytest tests/ -v
 ```
-
-There are **44 tests** across three files:
-
-| File | What it tests |
-|------|---------------|
-| `tests/test_framing.py` | UART bit framing — round-trips for all printable ASCII, start/stop bit correctness, error detection |
-| `tests/test_dsp.py` | Tone generation, Goertzel energy accuracy, bit detection with and without noise, noise floor |
-| `tests/test_loopback.py` | Full Tx → Rx round-trips in-process (no audio hardware) including tests with added Gaussian noise |
-
----
-
-## Project structure
-
-```
-acoustic-modem/
-├── requirements.txt
-├── acoustic_modem/
-│   ├── config.py      # All constants: frequencies, baud rate, thresholds
-│   ├── framing.py     # UART framing: char ↔ bits with start/stop bits
-│   ├── dsp.py         # Tone generation, Goertzel energy, bit detection
-│   ├── tx.py          # Transmitter: text → waveform → speakers
-│   ├── rx.py          # Receiver: mic → state machine → characters
-│   └── main.py        # Entry point and CLI
-└── tests/
-    ├── test_framing.py
-    ├── test_dsp.py
-    └── test_loopback.py
-```
-
-## Tuning
-
-All parameters are in `acoustic_modem/config.py`. If you experience false triggers or missed messages in a noisy environment, adjust:
-
-| Constant | Effect |
-|---|---|
-| `NOISE_FLOOR` | Raise to ignore more background noise |
-| `SNR_THRESHOLD` | Raise (towards 1.0) to require a purer tone before arming |
-| `PREAMBLE_LOCK_DURATION` | Raise to require a longer stable preamble before arming |
-| `INTER_CHAR_TIMEOUT` | Raise if characters are being dropped mid-message |
